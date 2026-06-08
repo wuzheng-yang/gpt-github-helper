@@ -1,15 +1,23 @@
 @echo off
-chcp 65001 >nul
-echo 正在启动 GPT 本地通知服务...
+setlocal
+cd /d "%~dp0"
+
+set "PYTHON_EXE=D:\sof\env\anaconda3\envs\ai-gzb\python.exe"
+if not exist "%PYTHON_EXE%" (
+  set "PYTHON_EXE=python"
+)
+
+echo Starting GPT local notify server...
 echo.
 
-echo D:\sof\env\anaconda3\envs\ai-gzb\python -m pip install -r requirements.txt
+echo Installing requirements...
+rem "%PYTHON_EXE%" -m pip install -r requirements.txt
 
 echo.
-echo 服务启动地址：http://127.0.0.1:18888
-echo 健康检查地址：http://127.0.0.1:18888/health
+echo Server URL: http://127.0.0.1:18888
+echo Health URL: http://127.0.0.1:18888/health
 echo.
 
-D:\sof\env\anaconda3\envs\ai-gzb\python local_notify_server.py
+"%PYTHON_EXE%" local_notify_server.py
 
 pause
