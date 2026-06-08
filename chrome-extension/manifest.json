@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT GitHub Helper Full",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "检测 ChatGPT 回答状态，保存最后回复内容，并辅助确认 GitHub 工具请求",
   "permissions": [],
   "host_permissions": [
@@ -9,6 +9,9 @@
     "https://chat.openai.com/*",
     "http://127.0.0.1:18888/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
