@@ -16,13 +16,29 @@
   let lastAssistantChangeTime = 0;
 
   /**
+   * 缓存最后一条 assistant / user 消息 DOM。
+   * 说明：
+   * 1. 原来每秒 querySelectorAll 全量扫描所有消息，再取最后一个。
+   * 2. 会话几百轮时，全量扫描会变慢。
+   * 3. 现在使用 MutationObserver 在 DOM 变化时刷新缓存，平时直接读取缓存节点。
+   */
+  let cachedLastAssistantElement = null;
+  let cachedLastUserElement = null;
+
+  /**
+   * 防止 DOM 高频变化时反复刷新缓存。
+   */
+  let refreshCacheTimer = null;
+
+  /**
    * 最近一次判断结果，方便在控制台调试。
    */
   let lastThinkingDebug = {
     thinking: false,
     reason: 'init',
     assistantLength: 0,
-    lastChangeAgoMs: 0
+    lastChangeAgoMs: 0,
+    cacheReady: false
   };
 
   /**
@@ -40,27 +56,133 @@
   }
 
   /**
-   * 判断元素是否可见。
-   * 说明：
-   * ChatGPT 页面有很多隐藏模板和隐藏按钮。
-   * 这里只保存可见区域，避免把隐藏 UI 文案反复保存进去。
+   * 判断元素是否仍在页面中。
    */
-  function isVisibleElement(element) {
+  function isElementAlive(element) {
+    return Boolean(element && document.body && document.body.contains(element));
+  }
+
+  /**
+   * 读取元素文本。
+   *
+   * @param {Element} element DOM 元素
+   * @param {boolean} preferInnerText 是否优先使用 innerText
+   * - false：优先 textContent，轻量，适合每秒状态判断。
+   * - true：优先 innerText，格式更接近页面，适合保存 Markdown。
+   */
+  function getElementText(element, preferInnerText = false) {
     if (!element) {
-      return false;
+      return '';
     }
 
-    const style = window.getComputedStyle(element);
-    if (
-      style.display === 'none' ||
-      style.visibility === 'hidden' ||
-      Number(style.opacity) === 0
-    ) {
-      return false;
+    const text = preferInnerText
+      ? (element.innerText || element.textContent || '')
+      : (element.textContent || element.innerText || '');
+
+    return cleanText(text);
+  }
+
+  /**
+   * 从 NodeList 末尾反向查找最后一个有文本的消息元素。
+   * 说明：
+   * querySelectorAll 仍然会返回所有匹配节点，但不再 Array.from 全量转换。
+   */
+  function findLastMessageElementByRole(role) {
+    const messages = document.querySelectorAll(`[data-message-author-role="${role}"]`);
+
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const element = messages[i];
+
+      if (!element) {
+        continue;
+      }
+
+      if (getElementText(element, false)) {
+        return element;
+      }
     }
 
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    return null;
+  }
+
+  /**
+   * 刷新最后一条 user / assistant 消息缓存。
+   */
+  function refreshLastMessageCache() {
+    cachedLastAssistantElement = findLastMessageElementByRole('assistant');
+    cachedLastUserElement = findLastMessageElementByRole('user');
+  }
+
+  /**
+   * 延迟刷新缓存。
+   * 说明：
+   * GPT 输出时 DOM 会高频变化，用轻微 debounce 减少重复扫描。
+   */
+  function scheduleRefreshLastMessageCache() {
+    if (refreshCacheTimer) {
+      return;
+    }
+
+    refreshCacheTimer = setTimeout(() => {
+      refreshCacheTimer = null;
+      refreshLastMessageCache();
+    }, 120);
+  }
+
+  /**
+   * 启动 DOM 观察器。
+   * 说明：
+   * 页面消息新增、流式输出、切换会话时都会触发缓存刷新。
+   */
+  function startMessageObserver() {
+    if (!document.body || typeof MutationObserver === 'undefined') {
+      refreshLastMessageCache();
+      return;
+    }
+
+    const observer = new MutationObserver(() => {
+      scheduleRefreshLastMessageCache();
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+
+    refreshLastMessageCache();
+  }
+
+  /**
+   * 获取最后一条指定角色的消息元素。
+   */
+  function getLastMessageElement(role) {
+    const cacheElement = role === 'assistant'
+      ? cachedLastAssistantElement
+      : cachedLastUserElement;
+
+    if (isElementAlive(cacheElement)) {
+      return cacheElement;
+    }
+
+    // 缓存节点不存在或已经被页面移除时，兜底刷新一次。
+    refreshLastMessageCache();
+
+    return role === 'assistant'
+      ? cachedLastAssistantElement
+      : cachedLastUserElement;
+  }
+
+  /**
+   * 获取最后一条指定角色的消息文本。
+   * role 可选：assistant / user。
+   *
+   * @param {string} role 消息角色
+   * @param {boolean} preferInnerText 是否优先使用 innerText
+   */
+  function getLastMessageText(role, preferInnerText = false) {
+    const element = getLastMessageElement(role);
+    return getElementText(element, preferInnerText);
   }
 
   /**
@@ -75,33 +197,21 @@
   }
 
   /**
-   * 获取最后一条指定角色的消息文本。
-   * role 可选：assistant / user。
-   */
-  function getLastMessageText(role) {
-    const messages = Array.from(
-      document.querySelectorAll(`[data-message-author-role="${role}"]`)
-    );
-
-    if (!messages.length) {
-      return '';
-    }
-
-    return cleanText(messages[messages.length - 1].innerText || '');
-  }
-
-  /**
    * 获取最后一条 GPT 回复。
+   * 说明：
+   * 默认使用轻量 textContent，避免每秒状态判断触发布局计算。
    */
   function getLastAssistantMessageText() {
-    return getLastMessageText('assistant');
+    return getLastMessageText('assistant', false);
   }
 
   /**
    * 获取最后一条用户提问。
+   * 说明：
+   * 自动发送 ack 判断只需要文本匹配，使用 textContent 更轻量。
    */
   function getLastUserMessageText() {
-    return getLastMessageText('user');
+    return getLastMessageText('user', false);
   }
 
   /**
@@ -152,7 +262,7 @@
   /**
    * 获取用户 / assistant 普通消息。
    * 说明：
-   * 这是最稳定的 ChatGPT 消息选择器。
+   * 这是完整会话快照保存逻辑，只在回答结束时执行，可以保留更完整的 innerText 格式。
    */
   function getRoleMessages() {
     const elements = Array.from(
@@ -166,6 +276,30 @@
         return createMessageItem(role, element.innerText || '', index, 'data-message-author-role');
       })
       .filter(item => item.text);
+  }
+
+  /**
+   * 判断元素是否可见。
+   * 说明：
+   * ChatGPT 页面有很多隐藏模板和隐藏按钮。
+   * 这里只保存可见区域，避免把隐藏 UI 文案反复保存进去。
+   */
+  function isVisibleElement(element) {
+    if (!element) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      Number(style.opacity) === 0
+    ) {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
   /**
@@ -269,7 +403,8 @@
         thinking: false,
         reason: 'no_assistant_message',
         assistantLength: 0,
-        lastChangeAgoMs: 0
+        lastChangeAgoMs: 0,
+        cacheReady: false
       };
       return false;
     }
@@ -282,7 +417,8 @@
         thinking: false,
         reason: 'init_assistant_text',
         assistantLength: currentAssistantText.length,
-        lastChangeAgoMs: 0
+        lastChangeAgoMs: 0,
+        cacheReady: Boolean(cachedLastAssistantElement)
       };
       return false;
     }
@@ -295,7 +431,8 @@
         thinking: true,
         reason: 'assistant_text_changed',
         assistantLength: currentAssistantText.length,
-        lastChangeAgoMs: 0
+        lastChangeAgoMs: 0,
+        cacheReady: Boolean(cachedLastAssistantElement)
       };
       return true;
     }
@@ -308,7 +445,8 @@
         thinking: true,
         reason: 'wait_text_stable',
         assistantLength: currentAssistantText.length,
-        lastChangeAgoMs
+        lastChangeAgoMs,
+        cacheReady: Boolean(cachedLastAssistantElement)
       };
       return true;
     }
@@ -317,7 +455,8 @@
       thinking: false,
       reason: 'text_stable_finished',
       assistantLength: currentAssistantText.length,
-      lastChangeAgoMs
+      lastChangeAgoMs,
+      cacheReady: Boolean(cachedLastAssistantElement)
     };
     return false;
   }
@@ -331,10 +470,29 @@
     return lastThinkingDebug;
   }
 
+  /**
+   * 获取最后一条消息缓存调试信息。
+   * 在 ChatGPT 页面控制台执行：
+   * window.GptGithubHelper.pageReader.getLastMessageDebug()
+   */
+  function getLastMessageDebug() {
+    return {
+      assistantAlive: isElementAlive(cachedLastAssistantElement),
+      userAlive: isElementAlive(cachedLastUserElement),
+      assistantTextLength: getLastAssistantMessageText().length,
+      userTextLength: getLastUserMessageText().length,
+      assistantElement: cachedLastAssistantElement,
+      userElement: cachedLastUserElement
+    };
+  }
+
+  startMessageObserver();
+
   window.GptGithubHelper.pageReader = {
     getPageText,
     isThinking,
     getThinkingDebug,
+    getLastMessageDebug,
     getLastAssistantMessageText,
     getLastUserMessageText,
     getConversationSnapshot
