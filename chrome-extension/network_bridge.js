@@ -39,13 +39,12 @@
     const requestId = data.requestId || '';
     const now = Date.now();
 
+    // 能收到任意 network_watcher 事件，就说明 MAIN world 脚本已经生效。
+    // installed 事件可能发生在 bridge 绑定监听之前，所以不能只依赖 installed 事件。
+    networkState.installed = true;
     networkState.lastEvent = data;
     networkState.lastUrl = data.url || '';
     networkState.lastSourceType = data.sourceType || '';
-
-    if (eventName === 'installed') {
-      networkState.installed = true;
-    }
 
     if (eventName === 'start' && requestId) {
       activeRequests.set(requestId, data);
