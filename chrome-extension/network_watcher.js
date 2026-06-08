@@ -74,7 +74,7 @@
    *
    * 规则：
    * 1. 必须是 POST。
-   * 2. 排除 feedback / settings / history 等非回答生成接口。
+   * 2. 排除 prepare / feedback / settings / history 等非回答生成接口。
    * 3. URL 需要包含 conversation / responses 等回答生成接口关键词。
    */
   function shouldWatchUrl(url, method = 'GET') {
@@ -84,10 +84,11 @@
       return false;
     }
 
-    // 这些不是回答生成接口，排除掉，避免 implicit_message_feedback 之类接口干扰判断。
+    // 这些不是回答生成接口，排除掉，避免 prepare / feedback 之类接口干扰判断。
     const ignoredKeywords = [
       'implicit_message_feedback',
       'feedback',
+      'prepare',
       'moderation',
       'accounts',
       'settings',
