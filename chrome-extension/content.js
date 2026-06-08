@@ -339,19 +339,18 @@
       sendButton.click();
       console.log('[GPT GitHub Helper] 已自动发送本地消息');
       ackLocalMessage(messageId);
-      return true;
+      return;
     }
 
-    if (retryCount < 10) {
+    if (retryCount < 15) {
       setTimeout(() => {
         clickSendButtonWithRetry(messageId, retryCount + 1);
       }, 300);
-      return false;
+      return;
     }
 
-    console.warn('[GPT GitHub Helper] ChatGPT 发送按钮不可用，已停止重试');
+    console.warn('[GPT GitHub Helper] ChatGPT 发送按钮不可用，消息保留在本地队列，稍后重试');
     sendingLocalMessage = false;
-    return false;
   }
 
   /**
@@ -390,25 +389,6 @@
   }
 
   /**
-   * 使用 Enter 作为兜底发送方式。
-   * 说明：
-   * 有些页面结构下按钮选择器变化，Enter 仍然能触发发送。
-   */
-  function fallbackPressEnter(input) {
-    const eventOptions = {
-      bubbles: true,
-      cancelable: true,
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13
-    };
-
-    input.dispatchEvent(new KeyboardEvent('keydown', eventOptions));
-    input.dispatchEvent(new KeyboardEvent('keyup', eventOptions));
-  }
-
-  /**
    * 向 ChatGPT 输入框输入文本并点击发送。
    */
   function sendTextToChatGPT(message) {
@@ -443,13 +423,9 @@
     }
 
     // 先等编辑器刷新，再点击按钮。
+    // 只有真正点击发送按钮成功后，才会 ack 删除队列消息。
     setTimeout(() => {
-      const clicked = clickSendButtonWithRetry(messageId);
-
-      // 发送按钮找不到或不可用时，尝试 Enter 兜底。
-      if (!clicked) {
-        fallbackPressEnter(input);
-      }
+      clickSendButtonWithRetry(messageId);
     }, 500);
 
     return true;
