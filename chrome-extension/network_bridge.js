@@ -7,8 +7,9 @@
 // 并包装 pageReader.isThinking()。
 //
 // 判断优先级：
-// 1. 如果已经捕获到回答流接口：优先按网络请求是否结束判断。
-// 2. 如果还没有捕获到接口：回退到 page_reader.js 原来的 DOM 文本变化判断。
+// 1. 有活跃回答流接口：按网络请求判断为回答中。
+// 2. 回答流接口刚结束：继续等待短暂缓冲，避免保存半截回复。
+// 3. 超过缓冲时间后：不长期使用旧网络结束状态，回退 DOM 文本稳定判断。
 // -----------------------------------------------------------------------------
 
 (function () {
@@ -78,6 +79,7 @@
   function getNetworkThinkingState() {
     const now = Date.now();
 
+    // 有活跃回答流接口，直接认为回答中。
     if (activeRequests.size > 0) {
       return {
         available: true,
@@ -90,6 +92,7 @@
       };
     }
 
+    // 接口刚结束时保留短暂缓冲，等待页面最后 DOM 更新完成。
     if (networkState.lastEndAt && now - networkState.lastEndAt < NETWORK_FINISH_GRACE_MS) {
       return {
         available: true,
@@ -103,27 +106,19 @@
       };
     }
 
-    if (networkState.lastStartAt) {
-      return {
-        available: true,
-        thinking: false,
-        reason: 'network_stream_finished',
-        activeRequestCount: 0,
-        lastUrl: networkState.lastUrl,
-        lastSourceType: networkState.lastSourceType,
-        lastEvent: networkState.lastEvent,
-        lastEndAgoMs: networkState.lastEndAt ? now - networkState.lastEndAt : null
-      };
-    }
-
+    // 关键：超过缓冲时间后，不再长期使用旧的 network_stream_finished。
+    // 这样可以避免上一次接口结束状态影响下一轮判断，导致误判“已结束”。
     return {
       available: false,
       thinking: false,
-      reason: networkState.installed ? 'network_installed_no_request' : 'network_not_installed',
+      reason: networkState.lastStartAt
+        ? 'network_stream_finished_fallback_dom'
+        : (networkState.installed ? 'network_installed_no_request' : 'network_not_installed'),
       activeRequestCount: 0,
       lastUrl: networkState.lastUrl,
       lastSourceType: networkState.lastSourceType,
-      lastEvent: networkState.lastEvent
+      lastEvent: networkState.lastEvent,
+      lastEndAgoMs: networkState.lastEndAt ? now - networkState.lastEndAt : null
     };
   }
 
@@ -168,7 +163,9 @@
         ...domDebug,
         source: 'dom_fallback',
         networkReason: networkThinkingState.reason,
-        networkInstalled: networkState.installed
+        networkInstalled: networkState.installed,
+        lastNetworkUrl: networkThinkingState.lastUrl,
+        lastNetworkEndAgoMs: networkThinkingState.lastEndAgoMs ?? null
       };
 
       return domThinking;
