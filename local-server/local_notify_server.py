@@ -119,7 +119,12 @@ LOG_DIR.mkdir(exist_ok=True)
 # 3. 这样如果 ChatGPT 发送按钮不可用，消息不会丢。
 # 4. targetUrl 为空：只允许当前前台激活页面处理。
 # 5. targetUrl 不为空：只允许 URL 匹配的页面处理，后台标签页也可以尝试发送。
+# 6. 消息被某个页面取走后，会短暂加锁，避免多个窗口重复发送同一条消息。
 pending_chat_messages: List[Dict[str, str]] = []
+
+# 页面领取消息后的锁定时间。
+# 如果插件没有 ack，锁过期后消息会重新允许匹配页面领取。
+MESSAGE_CLAIM_SECONDS = 45
 
 
 # =========================
@@ -153,6 +158,49 @@ def is_message_match_page(message: Dict[str, str], page_url: str, page_active: b
         return bool(current_url) and current_url == target_url
 
     return page_active
+
+
+def is_claim_available(message: Dict[str, str], page_id: str, now: datetime.datetime) -> bool:
+    """
+    判断消息是否可以被当前页面领取。
+    说明：
+    1. 没有 claimedBy：可以领取。
+    2. claimedBy 是当前 pageId：允许重复读取，避免同一页面重试时被自己锁住。
+    3. claimExpiresAt 已过期：可以重新领取。
+    4. 其他情况：说明别的页面正在处理，不返回。
+    """
+
+    claimed_by = (message.get("claimedBy") or "").strip()
+    claim_expires_at = (message.get("claimExpiresAt") or "").strip()
+
+    if not claimed_by:
+        return True
+
+    if page_id and claimed_by == page_id:
+        return True
+
+    if not claim_expires_at:
+        return True
+
+    try:
+        expires_at = datetime.datetime.fromisoformat(claim_expires_at)
+    except ValueError:
+        return True
+
+    return now >= expires_at
+
+
+def claim_message(message: Dict[str, str], page_id: str, now: datetime.datetime):
+    """
+    给消息加短期领取锁。
+    说明：
+    pageId 由插件页面生成，用于避免多个 ChatGPT 标签页同时发送同一条队列消息。
+    """
+
+    message["claimedBy"] = page_id or "unknown-page"
+    message["claimExpiresAt"] = (
+        now + datetime.timedelta(seconds=MESSAGE_CLAIM_SECONDS)
+    ).isoformat()
 
 
 # =========================
@@ -478,7 +526,9 @@ def send_chat_message(payload: SendChatPayload):
         "id": uuid4().hex,
         "text": text,
         "targetUrl": target_url,
-        "createdAt": datetime.datetime.now().isoformat()
+        "createdAt": datetime.datetime.now().isoformat(),
+        "claimedBy": "",
+        "claimExpiresAt": ""
     }
 
     pending_chat_messages.append(message)
@@ -492,7 +542,7 @@ def send_chat_message(payload: SendChatPayload):
 
 
 @app.get("/next-chat-message")
-def next_chat_message(pageUrl: str = "", pageActive: bool = False):
+def next_chat_message(pageUrl: str = "", pageActive: bool = False, pageId: str = ""):
     """
     插件轮询这个接口。
     如果有当前页面可处理的待发送消息，只返回该消息，不删除。
@@ -501,6 +551,7 @@ def next_chat_message(pageUrl: str = "", pageActive: bool = False):
     匹配规则：
     1. targetUrl 为空：只有 pageActive=true 的当前前台页面能取走。
     2. targetUrl 不为空：只要 pageUrl 与 targetUrl 匹配即可取走，不强制前台。
+    3. 命中后会短暂加锁，避免多个窗口重复发送。
     """
 
     if not pending_chat_messages:
@@ -511,14 +562,23 @@ def next_chat_message(pageUrl: str = "", pageActive: bool = False):
             "queueSize": 0
         }
 
+    now = datetime.datetime.now()
+
     for message in pending_chat_messages:
-        if is_message_match_page(message, pageUrl, pageActive):
-            return {
-                "success": True,
-                "hasMessage": True,
-                "message": message,
-                "queueSize": len(pending_chat_messages)
-            }
+        if not is_message_match_page(message, pageUrl, pageActive):
+            continue
+
+        if not is_claim_available(message, pageId, now):
+            continue
+
+        claim_message(message, pageId, now)
+
+        return {
+            "success": True,
+            "hasMessage": True,
+            "message": message,
+            "queueSize": len(pending_chat_messages)
+        }
 
     return {
         "success": True,
@@ -611,12 +671,17 @@ def health():
         item for item in pending_chat_messages
         if item.get("targetUrl")
     ])
+    claimed_count = len([
+        item for item in pending_chat_messages
+        if item.get("claimedBy")
+    ])
 
     return {
         "success": True,
         "message": "GPT 本地通知服务运行中",
         "pendingChatMessages": len(pending_chat_messages),
-        "targetedChatMessages": targeted_count
+        "targetedChatMessages": targeted_count,
+        "claimedChatMessages": claimed_count
     }
 
 
