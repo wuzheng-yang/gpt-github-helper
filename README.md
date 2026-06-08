@@ -638,6 +638,21 @@ window.GptGithubHelper.pageReader.isThinking()
 chrome-extension/config.js
 ```
 
+页面右侧会常驻显示“GitHub Helper”状态卡。点击状态卡后可以直接修改常用校验配置：
+
+状态卡会在 ChatGPT 页面使用当前浏览器登录态读取会员计划和 Codex 用量，显示 `Pro 5×`、5 小时剩余量、7 天剩余量等状态；读取失败时只影响状态显示，不影响 GitHub 请求确认功能。
+
+- 本地服务地址
+- 允许仓库
+- 禁止分支
+- 允许操作
+- 禁止路径
+- 危险词
+
+保存后配置会写入 `chrome.storage.local`，当前 ChatGPT 页面后续 GitHub 请求校验会立即使用新配置；刷新页面或重新打开浏览器后仍会保留。多值配置按“每行一项”填写。
+
+如果需要恢复代码中的默认值，可以在右侧配置面板点击“恢复默认”，再点击“保存配置”。
+
 默认配置示例：
 
 ```js

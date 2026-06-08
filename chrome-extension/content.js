@@ -13,7 +13,7 @@
 // 6. 轮询本地 Python 消息队列，把 Python 发来的文本自动输入到 ChatGPT。
 //
 // 依赖模块加载顺序由 manifest.json 保证：
-// config.js -> page_reader.js -> local_api.js -> github_prompt.js
+// config.js -> runtime_settings.js -> page_reader.js -> local_api.js -> github_prompt.js
 // -> safety_check.js -> panel.js -> content.js
 // -----------------------------------------------------------------------------
 
@@ -22,6 +22,7 @@
   // 这些对象分别由前面的 JS 文件注册。
   const {
     config,
+    runtimeSettings,
     pageReader,
     localApi,
     githubPrompt,
@@ -584,7 +585,16 @@
       return;
     }
 
-    const requestUrl = config.localServerBaseUrl + '/ack-chat-message';
+    const baseUrl = localApi.getLocalServerBaseUrl
+      ? localApi.getLocalServerBaseUrl()
+      : String(config.localServerBaseUrl || '').trim();
+
+    if (!baseUrl) {
+      sendingLocalMessage = false;
+      return;
+    }
+
+    const requestUrl = baseUrl + '/ack-chat-message';
 
     chrome.runtime.sendMessage(
       {
@@ -667,13 +677,21 @@
    * - pageId：当前页面唯一 ID，用于后端消息领取锁。
    */
   function buildNextMessageUrl() {
+    const baseUrl = localApi.getLocalServerBaseUrl
+      ? localApi.getLocalServerBaseUrl()
+      : String(config.localServerBaseUrl || '').trim();
+
+    if (!baseUrl) {
+      return '';
+    }
+
     const params = new URLSearchParams({
       pageUrl: location.href,
       pageActive: String(isCurrentPageActive()),
       pageId
     });
 
-    return `${config.localServerBaseUrl}/next-chat-message?${params.toString()}`;
+    return `${baseUrl}/next-chat-message?${params.toString()}`;
   }
 
   /**
@@ -692,6 +710,11 @@
     pollingLocalMessage = true;
 
     const requestUrl = buildNextMessageUrl();
+
+    if (!requestUrl) {
+      pollingLocalMessage = false;
+      return;
+    }
 
     chrome.runtime.sendMessage(
       {
@@ -853,17 +876,26 @@
     // 面板按钮点击时，允许用户强制确认。
     panel.setConfirmHandler(() => confirmAllow(true));
 
-    bindShortcut();
+    const startLoop = () => {
+      bindShortcut();
 
-    setInterval(loop, 1000);
+      setInterval(loop, 1000);
 
-    // 每 1 秒从 Python 本地服务拉取待发送消息。
-    setInterval(pollPythonMessageQueue, 1000);
+      // 每 1 秒从 Python 本地服务拉取待发送消息。
+      setInterval(pollPythonMessageQueue, 1000);
 
-    console.log('[GPT GitHub Helper Full] 已启动', {
-      pageId,
-      url: location.href
-    });
+      console.log('[GPT GitHub Helper Full] 已启动', {
+        pageId,
+        url: location.href
+      });
+    };
+
+    if (runtimeSettings && runtimeSettings.loadRuntimeConfig) {
+      runtimeSettings.loadRuntimeConfig().finally(startLoop);
+      return;
+    }
+
+    startLoop();
   }
 
   start();

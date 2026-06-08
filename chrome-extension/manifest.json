@@ -33,14 +33,15 @@
       ],
       "js": [
         "config.js",
+        "runtime_settings.js",
         "page_reader.js",
         "network_bridge.js",
         "local_api.js",
         "github_prompt.js",
         "safety_check.js",
+        "usage_status.js",
         "panel.js",
-        "content.js",
-        "runtime_settings.js"
+        "content.js"
       ],
       "run_at": "document_idle"
     }

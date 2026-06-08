@@ -1,10 +1,10 @@
 // runtime_settings.js
 // -----------------------------------------------------------------------------
-// 本地服务地址运行时配置。
+// 运行时配置。
 //
 // 作用：
-// 1. 页面加载后读取 chrome.storage.local 中保存的本地服务地址。
-// 2. 合并到 window.GptGithubHelper.config.localServerBaseUrl。
+// 1. 页面加载后读取 chrome.storage.local 中保存的配置。
+// 2. 合并到 window.GptGithubHelper.config。
 // 3. 提供保存方法给右侧配置面板使用。
 // -----------------------------------------------------------------------------
 
@@ -12,7 +12,17 @@
   window.GptGithubHelper = window.GptGithubHelper || {};
 
   const helper = window.GptGithubHelper;
-  const storageKey = 'gpt_github_helper_local_server_url';
+  const storageKey = 'gpt_github_helper_runtime_config';
+  const legacyLocalServerUrlKey = 'gpt_github_helper_local_server_url';
+  const configurableKeys = [
+    'localServerBaseUrl',
+    'allowedRepos',
+    'blockedBranches',
+    'allowedActions',
+    'blockedPaths',
+    'dangerWords'
+  ];
+  let defaultRuntimeConfig = null;
 
   /**
    * 判断 chrome.storage.local 是否可用。
@@ -30,7 +40,74 @@
    */
   function normalizeUrl(url) {
     const value = String(url || '').trim();
-    return value || 'http://127.0.0.1:18888';
+    return value;
+  }
+
+  /**
+   * 清理列表配置。
+   */
+  function normalizeList(list) {
+    if (!Array.isArray(list)) {
+      return [];
+    }
+
+    return list
+      .map(item => String(item || '').trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * 只保留允许运行时修改的配置项。
+   */
+  function normalizeRuntimeConfig(runtimeConfig) {
+    const source = runtimeConfig || {};
+    const nextConfig = {};
+
+    configurableKeys.forEach(key => {
+      if (!(key in source)) {
+        return;
+      }
+
+      nextConfig[key] = key === 'localServerBaseUrl'
+        ? normalizeUrl(source[key])
+        : normalizeList(source[key]);
+    });
+
+    return nextConfig;
+  }
+
+  /**
+   * 获取当前可编辑配置快照。
+   */
+  function getRuntimeConfig() {
+    const config = helper.config || {};
+
+    return normalizeRuntimeConfig({
+      localServerBaseUrl: config.localServerBaseUrl,
+      allowedRepos: config.allowedRepos,
+      blockedBranches: config.blockedBranches,
+      allowedActions: config.allowedActions,
+      blockedPaths: config.blockedPaths,
+      dangerWords: config.dangerWords
+    });
+  }
+
+  function getDefaultRuntimeConfig() {
+    if (!defaultRuntimeConfig) {
+      defaultRuntimeConfig = getRuntimeConfig();
+    }
+
+    return normalizeRuntimeConfig(defaultRuntimeConfig);
+  }
+
+  /**
+   * 应用运行时配置到全局配置对象。
+   */
+  function applyRuntimeConfig(runtimeConfig) {
+    const nextConfig = normalizeRuntimeConfig(runtimeConfig);
+    helper.config = helper.config || {};
+    Object.assign(helper.config, nextConfig);
+    return getRuntimeConfig();
   }
 
   /**
@@ -43,58 +120,92 @@
   }
 
   /**
-   * 读取已保存的服务地址。
+   * 读取已保存的运行时配置。
    */
-  function loadLocalServerUrl() {
+  function loadRuntimeConfig() {
     return new Promise(resolve => {
       if (!hasStorageApi()) {
-        resolve(helper.config && helper.config.localServerBaseUrl);
+        resolve(getRuntimeConfig());
         return;
       }
 
-      chrome.storage.local.get([storageKey], result => {
+      chrome.storage.local.get([storageKey, legacyLocalServerUrlKey], result => {
         if (chrome.runtime && chrome.runtime.lastError) {
-          console.warn('[GPT GitHub Helper] 读取本地服务地址失败：', chrome.runtime.lastError.message);
-          resolve(helper.config && helper.config.localServerBaseUrl);
+          console.warn('[GPT GitHub Helper] 读取运行时配置失败：', chrome.runtime.lastError.message);
+          resolve(getRuntimeConfig());
           return;
         }
 
-        const savedUrl = result && result[storageKey];
-        resolve(savedUrl ? applyLocalServerUrl(savedUrl) : helper.config.localServerBaseUrl);
+        const savedConfig = result && result[storageKey];
+        const legacyLocalServerUrl = result && result[legacyLocalServerUrlKey];
+        const mergedConfig = savedConfig || {};
+
+        if (legacyLocalServerUrl && !mergedConfig.localServerBaseUrl) {
+          mergedConfig.localServerBaseUrl = legacyLocalServerUrl;
+        }
+
+        resolve(savedConfig || legacyLocalServerUrl
+          ? applyRuntimeConfig(mergedConfig)
+          : getRuntimeConfig());
       });
     });
   }
 
   /**
-   * 保存服务地址。
+   * 保存运行时配置。
    */
-  function saveLocalServerUrl(url) {
+  function saveRuntimeConfig(runtimeConfig) {
     return new Promise((resolve, reject) => {
-      const nextUrl = applyLocalServerUrl(url);
+      const nextConfig = applyRuntimeConfig(runtimeConfig);
 
       if (!hasStorageApi()) {
-        resolve(nextUrl);
+        resolve(nextConfig);
         return;
       }
 
-      chrome.storage.local.set({ [storageKey]: nextUrl }, () => {
+      chrome.storage.local.set({ [storageKey]: nextConfig }, () => {
         if (chrome.runtime && chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
 
-        resolve(nextUrl);
+        resolve(nextConfig);
       });
     });
   }
 
+  /**
+   * 兼容旧调用：保存服务地址。
+   */
+  function loadLocalServerUrl() {
+    return loadRuntimeConfig().then(config => config.localServerBaseUrl);
+  }
+
+  function saveLocalServerUrl(url) {
+    return saveRuntimeConfig({
+      ...getRuntimeConfig(),
+      localServerBaseUrl: url
+    }).then(config => config.localServerBaseUrl);
+  }
+
+  defaultRuntimeConfig = getRuntimeConfig();
+
   helper.runtimeSettings = {
     storageKey,
+    legacyLocalServerUrlKey,
+    configurableKeys,
     normalizeUrl,
+    normalizeList,
+    normalizeRuntimeConfig,
+    getRuntimeConfig,
+    getDefaultRuntimeConfig,
+    applyRuntimeConfig,
+    loadRuntimeConfig,
+    saveRuntimeConfig,
     applyLocalServerUrl,
     loadLocalServerUrl,
     saveLocalServerUrl
   };
 
-  loadLocalServerUrl();
+  loadRuntimeConfig();
 })();

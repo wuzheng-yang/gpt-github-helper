@@ -33,6 +33,10 @@
     github: '/github-confirm-request'
   };
 
+  function getLocalServerBaseUrl() {
+    return String(config.localServerBaseUrl || '').trim();
+  }
+
   /**
    * 安全获取完整会话快照。
    *
@@ -163,7 +167,13 @@
       return;
     }
 
-    const requestUrl = config.localServerBaseUrl + path;
+    const baseUrl = getLocalServerBaseUrl();
+
+    if (!baseUrl) {
+      return;
+    }
+
+    const requestUrl = baseUrl + path;
     const payload = buildPayload(type, extraData);
 
     sendByBackground(requestUrl, payload);
@@ -171,6 +181,7 @@
 
   // 暴露给 content.js 使用。
   window.GptGithubHelper.localApi = {
-    callLocalNotifyApi
+    callLocalNotifyApi,
+    getLocalServerBaseUrl
   };
 })();
