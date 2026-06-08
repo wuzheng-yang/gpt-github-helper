@@ -12,8 +12,8 @@ import datetime
 import re
 import subprocess
 from pathlib import Path
-from queue import Queue, Empty
 from typing import Optional, List, Dict, Any
+from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI
@@ -74,6 +74,11 @@ class SendChatPayload(BaseModel):
     text: str
 
 
+class AckChatPayload(BaseModel):
+    # 插件成功点击发送后回传的消息 ID
+    id: str
+
+
 # =========================
 # FastAPI 应用
 # =========================
@@ -103,7 +108,11 @@ LOG_DIR.mkdir(exist_ok=True)
 # =========================
 # Python -> Chrome 插件消息队列
 # =========================
-pending_chat_messages: Queue[Dict[str, str]] = Queue()
+# 说明：
+# 1. 插件 GET /next-chat-message 时只查看第一条消息，不立即删除。
+# 2. 插件真正点击发送后，再 POST /ack-chat-message 确认删除。
+# 3. 这样如果 ChatGPT 发送按钮不可用，消息不会丢。
+pending_chat_messages: List[Dict[str, str]] = []
 
 
 # =========================
@@ -414,18 +423,22 @@ def send_chat_message(payload: SendChatPayload):
         return {
             "success": False,
             "message": "消息内容不能为空",
-            "queueSize": pending_chat_messages.qsize()
+            "queueSize": len(pending_chat_messages)
         }
 
-    pending_chat_messages.put({
+    message = {
+        "id": uuid4().hex,
         "text": text,
         "createdAt": datetime.datetime.now().isoformat()
-    })
+    }
+
+    pending_chat_messages.append(message)
 
     return {
         "success": True,
         "message": "消息已加入待发送队列",
-        "queueSize": pending_chat_messages.qsize()
+        "data": message,
+        "queueSize": len(pending_chat_messages)
     }
 
 
@@ -433,12 +446,11 @@ def send_chat_message(payload: SendChatPayload):
 def next_chat_message():
     """
     插件轮询这个接口。
-    如果有待发送消息，就取出一条；如果没有，就返回 hasMessage=false。
+    如果有待发送消息，只返回第一条，不删除。
+    插件发送成功后会调用 /ack-chat-message 删除。
     """
 
-    try:
-        message = pending_chat_messages.get_nowait()
-    except Empty:
+    if not pending_chat_messages:
         return {
             "success": True,
             "hasMessage": False,
@@ -449,8 +461,39 @@ def next_chat_message():
     return {
         "success": True,
         "hasMessage": True,
-        "message": message,
-        "queueSize": pending_chat_messages.qsize()
+        "message": pending_chat_messages[0],
+        "queueSize": len(pending_chat_messages)
+    }
+
+
+@app.post("/ack-chat-message")
+def ack_chat_message(payload: AckChatPayload):
+    """
+    插件确认消息已经点击发送。
+    收到确认后，本地服务才从队列删除消息。
+    """
+
+    message_id = (payload.id or "").strip()
+
+    if not message_id:
+        return {
+            "success": False,
+            "message": "缺少消息 ID",
+            "queueSize": len(pending_chat_messages)
+        }
+
+    before_size = len(pending_chat_messages)
+    pending_chat_messages[:] = [
+        item for item in pending_chat_messages
+        if item.get("id") != message_id
+    ]
+    removed = before_size - len(pending_chat_messages)
+
+    return {
+        "success": True,
+        "message": "消息确认成功" if removed else "消息已不在队列中",
+        "removed": removed,
+        "queueSize": len(pending_chat_messages)
     }
 
 
@@ -505,7 +548,7 @@ def health():
     return {
         "success": True,
         "message": "GPT 本地通知服务运行中",
-        "pendingChatMessages": pending_chat_messages.qsize()
+        "pendingChatMessages": len(pending_chat_messages)
     }
 
 
