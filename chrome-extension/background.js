@@ -12,37 +12,63 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  const { url, payload } = message;
+  const { url, payload, method = 'POST' } = message;
 
-  if (!url || !payload) {
+  if (!url) {
     sendResponse({
       success: false,
-      error: '缺少 url 或 payload'
+      error: '缺少 url'
     });
     return false;
   }
 
-  // 在后台脚本里请求本地服务，避免页面环境 CORS / loopback 拦截
-  fetch(url, {
-    method: 'POST',
+  const requestMethod = String(method || 'POST').toUpperCase();
+
+  const fetchOptions = {
+    method: requestMethod,
     headers: {
       'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  })
+    }
+  };
+
+  // GET 请求不能带 body，其他请求才发送 JSON 请求体。
+  if (requestMethod !== 'GET') {
+    fetchOptions.body = JSON.stringify(payload || {});
+  }
+
+  // 在后台脚本里请求本地服务，避免页面环境 CORS / loopback 拦截
+  fetch(url, fetchOptions)
     .then(async response => {
       const text = await response.text();
+      let body = text;
+
+      // 本地 FastAPI 多数返回 JSON，这里尽量解析，失败就保留原始文本。
+      try {
+        body = JSON.parse(text);
+      } catch (error) {
+        body = text;
+      }
 
       sendResponse({
         success: response.ok,
         status: response.status,
-        body: text
+        body
       });
     })
     .catch(error => {
+      console.warn('[GPT GitHub Helper Background] 请求本地服务失败：', {
+        url,
+        method: requestMethod,
+        error: String(error),
+        tip: '请检查 local-server 是否已启动，端口是否为 18888'
+      });
+
       sendResponse({
         success: false,
-        error: String(error)
+        error: String(error),
+        url,
+        method: requestMethod,
+        tip: '本地服务可能没有启动，请检查 http://127.0.0.1:18888/health'
       });
     });
 
