@@ -10,10 +10,38 @@
 
 ### 1. ChatGPT 回答状态检测
 
-插件会检测最后一条 GPT 回复文本是否仍在变化。
+当前版本使用“双保险”判断 GPT 是否回答中：
 
-- 回复内容变化：认为 GPT 正在回答
-- 回复内容超过约 2 秒不再变化：认为 GPT 已结束
+```text
+优先：监听 ChatGPT 页面接口请求开始 / 结束
+兜底：检测最后一条 GPT 回复文本是否变化
+```
+
+网络接口判断流程：
+
+```text
+network_watcher.js 在 MAIN world 运行
+        ↓
+包装页面原生 fetch / XMLHttpRequest
+        ↓
+检测疑似 ChatGPT 回答流接口 start / end
+        ↓
+通过 window.postMessage 发给 network_bridge.js
+        ↓
+network_bridge.js 包装 pageReader.isThinking()
+        ↓
+content.js 根据 isThinking() 更新标题和保存会话
+```
+
+DOM 兜底判断流程：
+
+```text
+MutationObserver 监听页面 DOM 变化
+        ↓
+缓存最后一条 user / assistant 消息节点
+        ↓
+网络接口未命中时，按最后一条 assistant 文本变化判断
+```
 
 页面标题会同步变化：
 
@@ -23,18 +51,6 @@
 ```
 
 插件会单独记录 ChatGPT 原始会话标题，不会把上面的状态标题当成保存文件名。
-
-当前版本已经优化最后消息读取性能：
-
-```text
-MutationObserver 监听页面 DOM 变化
-        ↓
-缓存最后一条 user / assistant 消息节点
-        ↓
-每秒判断回答状态时直接读取缓存
-```
-
-这样长会话下不会每秒都把全部消息转成数组再取最后一条。
 
 ---
 
@@ -61,18 +77,6 @@ local-server/gpt_replies/
 
 ```text
 ChatGPT会话标题.md
-```
-
-例如 ChatGPT 左侧会话标题是：
-
-```text
-GitHub 插件调试
-```
-
-则保存为：
-
-```text
-local-server/gpt_replies/GitHub 插件调试.md
 ```
 
 保存策略：
@@ -194,6 +198,8 @@ gpt-github-helper/
 │  ├─ manifest.json
 │  ├─ config.js
 │  ├─ background.js
+│  ├─ network_watcher.js
+│  ├─ network_bridge.js
 │  ├─ page_reader.js
 │  ├─ local_api.js
 │  ├─ github_prompt.js
@@ -446,6 +452,46 @@ POST /ack-chat-message
 
 ---
 
+## 回答状态检测内部机制
+
+### 1. 网络接口优先
+
+`network_watcher.js` 在 `manifest.json` 里配置为：
+
+```json
+{
+  "js": ["network_watcher.js"],
+  "run_at": "document_start",
+  "world": "MAIN"
+}
+```
+
+这样它可以运行在 ChatGPT 页面真实上下文里，包装页面自己的 `fetch` 和 `XMLHttpRequest`。
+
+检测到疑似回答流接口后，会发出：
+
+```text
+start：接口开始，认为 GPT 正在回答
+end / error：接口结束，短暂缓冲后认为 GPT 已结束
+```
+
+`network_bridge.js` 接收这些事件，并包装：
+
+```js
+window.GptGithubHelper.pageReader.isThinking()
+```
+
+### 2. DOM 兜底
+
+如果网络接口监听没有命中，则继续使用原来的 DOM 方式：
+
+```text
+最后一条 assistant 文本变化：回答中
+最后一条 assistant 超过约 2 秒不变：已结束
+```
+
+---
+
 ## GitHub 确认规则
 
 当前配置文件：
@@ -567,38 +613,58 @@ subprocess.Popen([
 window.GptGithubHelper.pageReader.getThinkingDebug()
 ```
 
-返回示例：
+网络命中时返回示例：
+
+```js
+{
+  thinking: false,
+  reason: 'network_stream_finished',
+  source: 'network',
+  activeRequestCount: 0,
+  networkInstalled: true
+}
+```
+
+DOM 兜底时返回示例：
 
 ```js
 {
   thinking: false,
   reason: 'text_stable_finished',
+  source: 'dom_fallback',
   assistantLength: 1234,
-  lastChangeAgoMs: 3100,
   cacheReady: true
 }
 ```
 
-### 2. 查看最后消息缓存
+### 2. 查看网络监听状态
+
+```js
+window.GptGithubHelper.pageReader.getNetworkDebug()
+```
+
+或：
+
+```js
+window.GptGithubHelper.networkBridge.getNetworkDebug()
+```
+
+重点看：
+
+```text
+installed
+activeRequestCount
+lastUrl
+networkThinkingState.reason
+```
+
+### 3. 查看最后消息缓存
 
 ```js
 window.GptGithubHelper.pageReader.getLastMessageDebug()
 ```
 
-返回示例：
-
-```js
-{
-  assistantAlive: true,
-  userAlive: true,
-  assistantTextLength: 1234,
-  userTextLength: 56,
-  assistantElement: HTMLElement,
-  userElement: HTMLElement
-}
-```
-
-### 3. 查看插件是否启动
+### 4. 查看插件是否启动
 
 刷新 ChatGPT 页面后，控制台应看到类似日志：
 
@@ -635,6 +701,7 @@ chrome://extensions/
 3. ChatGPT 页面是否刷新
 4. 控制台是否还有请求错误
 5. `local-server/logs/finished.log` 是否有记录
+6. `getThinkingDebug()` 的 `source` 是 `network` 还是 `dom_fallback`
 
 ### 3. 为什么文件名是“未命名会话.md”
 
@@ -657,13 +724,16 @@ window.GptGithubHelper.pageReader.getThinkingDebug()
 重点看：
 
 ```text
+source
 reason
-assistantLength
-lastChangeAgoMs
-cacheReady
+activeRequestCount
+lastUrl
+networkReason
 ```
 
-如果 `assistant_text_changed` 一直出现，说明最后一条 assistant 文本还在变化。
+如果 `source=network` 且 `activeRequestCount` 长时间大于 0，说明网络请求还没结束或没有收到 end 事件。
+
+如果 `source=dom_fallback` 且 `assistant_text_changed` 一直出现，说明最后一条 assistant 文本还在变化。
 
 ### 5. Python 消息没有自动发送
 
@@ -721,5 +791,6 @@ git pull
 
 - 队列保存在内存里，本地服务重启后未发送消息会丢失。
 - 指定 `targetUrl` 的后台发送是“尝试发送”，受 Chrome 后台标签页限制，不保证 100% 成功。
+- 网络接口监听依赖 ChatGPT 当前接口路径，接口变化时会自动回退 DOM 判断。
 - 完整会话快照在超长会话里会比最后一条消息读取更重。
 - ChatGPT 页面 DOM 经常变化，选择器后续可能需要继续适配。
