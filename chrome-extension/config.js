@@ -17,9 +17,22 @@
     blockedBranches: ['master'],
 
     // 允许的 GitHub 操作
+    // 说明：
+    // 1. 前面几个是 ChatGPT 页面常见英文文案。
+    // 2. 后面几个是连接器/工具函数名，避免 UI 文案变化后误判。
     allowedActions: [
       'Update GitHub file',
-      'Create GitHub file'
+      'Create GitHub file',
+      'Delete GitHub file',
+      'Update file',
+      'Create file',
+      'Delete file',
+      'update_file',
+      'create_file',
+      'delete_file',
+      'GitHub/wuzheng-yang/gpt-github-helper.update_file',
+      'GitHub/wuzheng-yang/gpt-github-helper.create_file',
+      'GitHub/wuzheng-yang/gpt-github-helper.delete_file'
     ],
 
     // 不允许修改的文件夹或文件名
