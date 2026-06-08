@@ -1,6 +1,6 @@
 # GPT GitHub Helper Full
 
-这是一个 Chrome 插件 + 本地 Python 服务组合工具，用于辅助个人在 ChatGPT 页面中保存会话内容、记录 GitHub 工具确认请求，并提供快捷确认入口。
+这是一个 Chrome 插件 + 本地 Python 服务组合工具，用于辅助个人在 ChatGPT 页面中保存会话内容、记录 GitHub 工具确认请求、从 Python 向 ChatGPT 输入框发送消息，并提供快捷确认入口。
 
 ---
 
@@ -83,7 +83,31 @@ content script
 
 这样可以避免 ChatGPT 页面直接访问本机地址时出现 loopback / CORS 拦截问题。
 
-### 4. GitHub 工具确认辅助
+### 4. Python 向 ChatGPT 自动发送消息
+
+本地 Python 服务提供消息队列接口。
+
+外部 Python 程序把消息提交到：
+
+```text
+POST http://127.0.0.1:18888/send-chat-message
+```
+
+Chrome 插件会每 1 秒轮询：
+
+```text
+GET http://127.0.0.1:18888/next-chat-message
+```
+
+如果队列中有消息，插件会自动：
+
+```text
+读取消息 -> 填入 ChatGPT 输入框 -> 点击发送按钮
+```
+
+注意：如果 GPT 正在回答中，插件不会取队列消息，避免取出后发送失败导致消息丢失。
+
+### 5. GitHub 工具确认辅助
 
 插件会检测 ChatGPT 页面中的 GitHub 工具确认请求，例如：
 
@@ -158,7 +182,8 @@ http://127.0.0.1:18888/health
 ```json
 {
   "success": true,
-  "message": "GPT 本地通知服务运行中"
+  "message": "GPT 本地通知服务运行中",
+  "pendingChatMessages": 0
 }
 ```
 
@@ -207,6 +232,45 @@ CORS policy
 ```
 
 请确认已经更新到包含 `background.js` 的版本，并且已经刷新 Chrome 插件。
+
+---
+
+## Python 自动发送消息用法
+
+### 1. HTTP 调用
+
+```python
+import requests
+
+url = "http://127.0.0.1:18888/send-chat-message"
+
+data = {
+    "text": "帮我总结一下这个会话当前进度"
+}
+
+response = requests.post(url, json=data, timeout=10)
+
+print(response.status_code)
+print(response.json())
+```
+
+### 2. curl 调用
+
+```bash
+curl -X POST http://127.0.0.1:18888/send-chat-message ^
+  -H "Content-Type: application/json" ^
+  -d "{\"text\":\"帮我总结一下这个会话当前进度\"}"
+```
+
+### 3. 队列状态
+
+查看本地服务健康状态：
+
+```text
+http://127.0.0.1:18888/health
+```
+
+返回里的 `pendingChatMessages` 表示等待发送的消息数量。
 
 ---
 
@@ -373,13 +437,24 @@ ERR_CONNECTION_REFUSED
 
 启动本地服务后，重新刷新 ChatGPT 页面即可。
 
+### 6. Python 提交了消息但没有自动发送
+
+检查：
+
+1. ChatGPT 页面是否已经打开并刷新
+2. Chrome 插件是否已刷新
+3. 本地服务是否启动
+4. GPT 是否正在回答中，回答中不会取队列
+5. 控制台是否提示没有找到输入框或发送按钮
+6. `http://127.0.0.1:18888/health` 里的 `pendingChatMessages` 是否大于 0
+
 ---
 
 ## 注意事项
 
 1. 插件从 ChatGPT 页面 DOM 读取内容，不是官方 API。
-2. 如果 ChatGPT 页面结构变化，可能需要调整 `page_reader.js` 或 `github_prompt.js` 里的选择器。
+2. 如果 ChatGPT 页面结构变化，可能需要调整 `page_reader.js`、`content.js` 或 `github_prompt.js` 里的选择器。
 3. GitHub 请求安全校验通过后会自动确认；未通过时需要手动点击“仍然确认”。
-4. 本地服务必须先启动，插件才能保存回复。
+4. 本地服务必须先启动，插件才能保存回复和自动发送消息。
 5. 修改 `manifest.json` 后必须在 `chrome://extensions/` 里刷新插件。
 6. 修改 `config.js` 后也需要刷新插件和 ChatGPT 页面。
