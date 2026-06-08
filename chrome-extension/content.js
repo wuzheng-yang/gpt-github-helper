@@ -58,8 +58,14 @@
   // 保存上一次请求文本，如果文本没变就不重复通知本地服务。
   let githubNotifiedText = '';
 
-  // 防止同一个 GitHub 确认请求重复自动点击 Allow。
-  let githubAutoConfirmedText = '';
+  // 防止同一个 GitHub 确认按钮重复自动点击。
+  // 用按钮 DOM 元素去重，而不是用请求文本去重：
+  // 连续多个 GitHub 请求可能文本相同，但按钮元素会是新的。
+  const autoConfirmedButtons = new WeakSet();
+
+  // 按钮被页面重绘时的兜底去重签名，短时间内避免同一请求重复安排定时点击。
+  let lastAutoConfirmSignature = '';
+  let lastAutoConfirmAt = 0;
 
   // 防止 /next-chat-message 轮询并发。
   // 如果上一次请求还没回来，下一次轮询直接跳过。
@@ -160,8 +166,10 @@
    * 注意：
    * 这里点击的是 ChatGPT 页面原生工具确认按钮，不是插件右侧面板按钮。
    */
-  function clickAllowButton() {
-    const allowButton = githubPrompt.findAllowButton();
+  function clickAllowButton(preferredButton = null) {
+    const allowButton = preferredButton && document.body.contains(preferredButton)
+      ? preferredButton
+      : githubPrompt.findAllowButton();
 
     if (!allowButton) {
       alert('没有找到 GitHub 允许按钮。');
@@ -177,27 +185,47 @@
    * 延迟自动确认 GitHub 工具请求。
    *
    * @param {string} githubText 当前 GitHub 工具确认卡片文本
+   * @param {HTMLButtonElement} allowButton 当前确认卡片里的原生 Allow / 允许按钮
    *
    * 为什么延迟 300ms：
    * - 给 panel.renderPanel() 一点时间先展示结果。
    * - 避免 DOM 刚出现时按钮还没稳定。
    *
-   * 为什么再次比较 githubPrompt.getGithubPromptText()：
-   * - 如果 300ms 内页面确认卡片变了，说明当前请求已变化，不能点旧请求。
+   * 为什么传入 allowButton：
+   * - 自动确认前不能再依赖整页文本比较，因为插件自己的弹窗也会改变页面文本。
+   * - 优先点击当前请求对应的按钮，如果页面重绘导致按钮失效，再兜底重新查找。
    */
-  function scheduleAutoConfirm(githubText) {
-    if (githubAutoConfirmedText === githubText) {
+  function getAutoConfirmSignature(githubText, allowButton) {
+    const rect = allowButton?.getBoundingClientRect?.();
+    const buttonPosition = rect
+      ? `${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)},${Math.round(rect.height)}`
+      : 'no-button';
+
+    return `${githubText}::${buttonPosition}`;
+  }
+
+  function scheduleAutoConfirm(githubText, allowButton) {
+    if (allowButton && autoConfirmedButtons.has(allowButton)) {
       return;
     }
 
-    githubAutoConfirmedText = githubText;
+    const now = Date.now();
+    const signature = getAutoConfirmSignature(githubText, allowButton);
+
+    if (signature === lastAutoConfirmSignature && now - lastAutoConfirmAt < 1500) {
+      return;
+    }
+
+    lastAutoConfirmSignature = signature;
+    lastAutoConfirmAt = now;
+
+    if (allowButton) {
+      autoConfirmedButtons.add(allowButton);
+    }
 
     setTimeout(() => {
-      if (githubPrompt.getGithubPromptText() !== githubText) {
-        return;
-      }
-
-      confirmAllow(false);
+      console.log('[GPT GitHub Helper] 配置校验通过，自动确认 GitHub 请求');
+      clickAllowButton(allowButton);
     }, 300);
   }
 
@@ -788,7 +816,7 @@
     panel.renderPanel(checkResult);
 
     if (checkResult.ok) {
-      scheduleAutoConfirm(githubText);
+      scheduleAutoConfirm(githubText, allowButton);
     }
   }
 
