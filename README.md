@@ -1,52 +1,89 @@
 # GPT GitHub Helper Full
 
-这是一个 Chrome 插件 + 本地 Python 服务组合工具。
+这是一个 Chrome 插件 + 本地 Python 服务组合工具，用于辅助个人在 ChatGPT 页面中保存回答内容、记录 GitHub 工具确认请求，并提供快捷确认入口。
 
-## 功能
+---
 
-### Chrome 插件功能
+## 主要功能
 
-- 检测 ChatGPT 是否正在回答
-- 回答中修改标题为：
+### 1. ChatGPT 回答状态检测
+
+插件会在 ChatGPT 页面中检测最后一条 GPT 回复是否仍在变化。
+
+- 回复内容变化：认为 GPT 正在回答
+- 回复内容超过约 2 秒不再变化：认为 GPT 已结束
+
+页面标题会同步变化：
 
 ```text
 ⏳ GPT 回答中 - ChatGPT
-```
-
-- 回答结束修改标题为：
-
-```text
 ✅ GPT 已结束 - ChatGPT
 ```
 
-- 回答结束后读取最后一条 GPT 回复
-- 把用户最后提问和 GPT 最后回复发送到本地服务
-- 检测 GitHub 工具确认请求
-- 根据仓库、操作、禁止分支、禁止路径做安全校验
-- 安全校验通过后，可点击右下角按钮确认
-- 安全校验通过后，也可按快捷键：
+### 2. 回答结束后保存内容
+
+回答结束后，插件会把下面内容发送给本地 Python 服务：
+
+- 页面标题
+- 页面地址
+- 最后一条用户提问
+- 最后一条 GPT 回复
+- 页面时间
+
+本地服务会保存 Markdown 文件到：
 
 ```text
-Alt + A
+local-server/gpt_replies/
 ```
 
-### 本地服务功能
+日志目录：
 
-- 接收插件发送的 GPT 回复
-- 保存为 Markdown 文件
-- 检测到 GitHub 请求时保存日志
-- Windows 下弹窗提醒
-- 可扩展调用自己的 exe / bat / Java 程序
+```text
+local-server/logs/
+```
+
+### 3. 本地服务中转
+
+Chrome 页面直接请求 `http://127.0.0.1:18888` 可能会被浏览器拦截。
+
+当前版本使用 Chrome 扩展后台脚本中转：
+
+```text
+content script
+  -> chrome.runtime.sendMessage
+  -> background.js
+  -> http://127.0.0.1:18888
+```
+
+这样可以避免 ChatGPT 页面直接访问本机地址时出现 loopback / CORS 拦截问题。
+
+### 4. GitHub 工具确认辅助
+
+插件会检测 ChatGPT 页面中的 GitHub 工具确认请求，例如：
+
+```text
+Update GitHub file
+Create GitHub file
+```
+
+检测到后会执行安全校验，并显示确认面板。
+
+当前版本不会无条件自动点击 GitHub 的 `Allow / 允许` 按钮。确认方式为：
+
+- 安全校验通过：可以点击插件面板里的确认按钮
+- 安全校验通过：也可以使用快捷键 `Alt + A`
+- 安全校验不通过：面板会提示原因，需要人工判断
 
 ---
 
 ## 目录结构
 
 ```text
-gpt-github-helper-full/
+gpt-github-helper/
 ├─ chrome-extension/
 │  ├─ manifest.json
 │  ├─ config.js
+│  ├─ background.js
 │  ├─ page_reader.js
 │  ├─ local_api.js
 │  ├─ github_prompt.js
@@ -57,6 +94,7 @@ gpt-github-helper-full/
 │  ├─ local_notify_server.py
 │  ├─ requirements.txt
 │  └─ start_server.bat
+├─ images2/
 └─ README.md
 ```
 
@@ -66,21 +104,21 @@ gpt-github-helper-full/
 
 进入目录：
 
-```text
-local-server
+```bash
+cd local-server
 ```
 
-双击：
-
-```text
-start_server.bat
-```
-
-或者手动执行：
+安装依赖并启动：
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python local_notify_server.py
+```
+
+Windows 也可以双击：
+
+```text
+local-server/start_server.bat
 ```
 
 启动成功后，浏览器访问：
@@ -102,7 +140,7 @@ http://127.0.0.1:18888/health
 
 ## 第二步：安装 Chrome 插件
 
-打开 Chrome：
+打开 Chrome 扩展页面：
 
 ```text
 chrome://extensions/
@@ -112,13 +150,9 @@ chrome://extensions/
 
 1. 打开右上角「开发者模式」
 2. 点击「加载已解压的扩展程序」
-3. 选择：
+3. 选择项目里的 `chrome-extension` 文件夹
 
-```text
-chrome-extension
-```
-
-注意：选择的是 `chrome-extension` 文件夹，不是整个压缩包。
+注意：选择的是 `chrome-extension` 文件夹，不是整个仓库目录。
 
 ![打开 Chrome 扩展开发者模式](images2/开发者-插件.jpg)
 
@@ -126,114 +160,119 @@ chrome-extension
 
 ---
 
-## 第三步：使用
+## 第三步：使用流程
 
-打开 ChatGPT 页面。
+1. 启动本地服务
+2. 刷新 Chrome 插件
+3. 刷新 ChatGPT 页面
+4. 正常向 ChatGPT 提问
+5. GPT 回答结束后，本地服务会收到 `/gpt-finished` 请求
+6. 回复内容会保存到 `local-server/gpt_replies/`
+
+如果浏览器控制台出现：
+
+```text
+ERR_CONNECTION_REFUSED
+```
+
+通常表示本地服务没有启动，或者端口不是 `18888`。
+
+如果出现：
+
+```text
+loopback address space
+CORS policy
+```
+
+请确认已经更新到包含 `background.js` 的版本，并且已经刷新 Chrome 插件。
 
 ![插件运行入口示例](images2/1780904034192.jpg)
-
-当 GPT 正在回答时，标题会变成：
-
-```text
-⏳ GPT 回答中 - ChatGPT
-```
-
-当 GPT 回答结束后，标题会变成：
-
-```text
-✅ GPT 已结束 - ChatGPT
-```
-
-同时本地服务会保存回复到：
-
-```text
-local-server/gpt_replies/
-```
-
-日志在：
-
-```text
-local-server/logs/
-```
 
 ![GPT 指示灯](images2/gpt指示灯.jpg)
 
 ---
 
-## GitHub 快捷确认
+## GitHub 确认规则
 
-插件默认只允许指定仓库和操作类型快捷确认，同时会拦截禁止分支、禁止路径和危险词。
-
-### 仓库
-
-```text
-wuzheng-yang/ai_gp_v2
-```
-
-### 不允许操作的分支
-
-```text
-main
-```
-
-### 操作
-
-```text
-Update GitHub file
-Create GitHub file
-```
-
-### 不允许修改的文件夹或文件名
-
-```text
-.env
-node_modules/
-dist/
-build/
-```
-
-### 危险词
-
-出现这些词时，不允许快捷确认：
-
-```text
-.env
-```
-
-其他危险词可在 `chrome-extension/config.js` 的 `dangerWords` 中按需开启。
-
-![GitHub 更新记录示例](images2/github更新.jpg)
-
----
-
-## 修改安全规则
-
-打开：
+当前配置文件：
 
 ```text
 chrome-extension/config.js
 ```
 
-修改插件配置：
+默认配置如下：
 
 ```js
 window.GptGithubHelper.config = {
   localServerBaseUrl: 'http://127.0.0.1:18888',
+
   allowedRepos: [
     'wuzheng-yang/gpt-github-helper'
   ],
-  blockedBranches: ['main'],
-  allowedActions: ['Update GitHub file', 'Create GitHub file'],
-  blockedPaths: ['.env', 'node_modules/', 'dist/', 'build/'],
-  dangerWords: ['.env']
+
+  blockedBranches: ['master'],
+
+  allowedActions: [
+    'Update GitHub file',
+    'Create GitHub file'
+  ],
+
+  blockedPaths: [
+    '.env',
+    'node_modules/',
+    'dist/',
+    'build/'
+  ],
+
+  dangerWords: [
+    '.env'
+  ],
+
+  shortcut: {
+    confirmAllowKey: 'a'
+  },
+
+  titles: {
+    thinking: '⏳ GPT 回答中 - ChatGPT',
+    finished: '✅ GPT 已结束 - ChatGPT'
+  }
 };
 ```
 
-修改后需要在 Chrome 扩展页面点击刷新插件。
+### 安全校验含义
+
+| 配置项 | 作用 |
+| --- | --- |
+| `allowedRepos` | 只允许这些仓库进入快捷确认流程 |
+| `blockedBranches` | 命中这些分支时不允许快捷确认 |
+| `allowedActions` | 只允许指定 GitHub 操作类型 |
+| `blockedPaths` | 命中这些路径时不允许快捷确认 |
+| `dangerWords` | 页面文本中出现这些词时不允许快捷确认 |
+| `shortcut.confirmAllowKey` | 快捷确认键，默认 `Alt + A` |
 
 ---
 
-## 调用你自己的本地程序
+## GitHub 请求日志
+
+检测到 GitHub 工具确认请求时，本地服务会记录日志。
+
+日志文件：
+
+```text
+local-server/logs/github_confirm.log
+```
+
+日志内容包括：
+
+- ChatGPT 页面地址
+- GitHub 文件路径
+- 安全校验是否通过
+- 未通过原因
+- 用户最后提问
+
+---
+
+## 本地调用外部程序
 
 打开：
 
@@ -247,7 +286,7 @@ local-server/local_notify_server.py
 def call_your_program(event_type: str, markdown_file: Optional[Path] = None):
 ```
 
-把里面改成：
+可以改成调用自己的 exe / bat / Java 程序：
 
 ```python
 subprocess.Popen([
@@ -261,10 +300,56 @@ subprocess.Popen([
 
 ---
 
-## 注意
+## 常见问题
+
+### 1. 本地服务启动了，但浏览器还是报错
+
+先确认是否能访问：
+
+```text
+http://127.0.0.1:18888/health
+```
+
+如果健康检查正常，但 ChatGPT 页面仍报 loopback / CORS 错误，请刷新插件：
+
+```text
+chrome://extensions/
+```
+
+然后刷新 ChatGPT 页面。
+
+### 2. 回答结束后没有保存 Markdown
+
+检查：
+
+1. 本地服务是否启动
+2. Chrome 插件是否刷新
+3. ChatGPT 页面是否刷新
+4. 控制台是否还有请求错误
+5. `local-server/logs/finished.log` 是否有记录
+
+### 3. 标题一直显示回答中
+
+当前判断逻辑基于最后一条 GPT 回复文本是否变化。
+
+如果页面中最后一条回复区域持续发生 DOM 文本变化，可能会延迟判断结束。一般等待几秒后会变为：
+
+```text
+✅ GPT 已结束 - ChatGPT
+```
+
+### 4. 为什么不做无条件自动点击 GitHub Allow
+
+当前版本保留人工确认入口，不做无条件自动点击。
+
+原因是 GitHub 工具确认属于写仓库操作，插件只负责辅助识别、展示校验结果、提供快捷键和日志记录。
+
+---
+
+## 注意事项
 
 1. 插件从 ChatGPT 页面 DOM 读取内容，不是官方 API。
-2. 如果 ChatGPT 页面结构变化，可能需要调整 `page_reader.js` 或 `github_prompt.js` 里的选择器。
-3. 插件不会无条件自动点击 GitHub 允许按钮。
-4. GitHub 快捷确认只会在安全校验通过后可用。
-5. 本地服务必须先启动，插件才能保存回复。
+2. ChatGPT 页面结构变化后，可能需要调整 `page_reader.js` 或 `github_prompt.js`。
+3. 本地服务必须先启动，插件才能保存回复。
+4. 修改 `manifest.json` 后必须在 `chrome://extensions/` 里刷新插件。
+5. 修改 `config.js` 后也需要刷新插件和 ChatGPT 页面。
