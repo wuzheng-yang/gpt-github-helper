@@ -16,10 +16,29 @@
   };
 
   /**
+   * 安全获取完整会话快照。
+   * 说明：
+   * 1. 回答结束时把完整消息列表、工具卡片、整页可见文本一起发给本地服务。
+   * 2. 如果 ChatGPT 页面 DOM 临时变化导致读取失败，不影响主流程，仍然保存最后一轮消息。
+   */
+  function getSafeConversationSnapshot() {
+    try {
+      if (!pageReader || typeof pageReader.getConversationSnapshot !== 'function') {
+        return null;
+      }
+
+      return pageReader.getConversationSnapshot();
+    } catch (error) {
+      console.warn('[GPT GitHub Helper] 获取完整会话快照失败：', error);
+      return null;
+    }
+  }
+
+  /**
    * 构建发送给本地服务的数据。
    */
   function buildPayload(type, extraData = {}) {
-    return {
+    const payload = {
       type,
       title: document.title,
       url: location.href,
@@ -28,6 +47,17 @@
       pageTime: new Date().toISOString(),
       ...extraData
     };
+
+    // 只在回答结束事件里发送完整快照，避免 GitHub 确认日志请求携带过大的页面内容。
+    if (type === 'finished') {
+      const snapshot = getSafeConversationSnapshot();
+
+      if (snapshot) {
+        payload.pageData = snapshot;
+      }
+    }
+
+    return payload;
   }
 
   /**
