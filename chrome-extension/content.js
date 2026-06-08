@@ -18,6 +18,9 @@
     panel
   } = window.GptGithubHelper;
 
+  // 当前页面唯一 ID，用于后端短时间锁定消息，避免多个 ChatGPT 窗口重复发送同一条队列消息。
+  const pageId = `page-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
   // 上一次 GPT 是否回答中的状态
   let lastThinkingState = null;
 
@@ -82,6 +85,18 @@
   function getConversationTitle() {
     refreshConversationTitle();
     return cleanConversationTitle(conversationTitle) || '未命名会话';
+  }
+
+  /**
+   * 判断当前页面是否是前台可操作页面。
+   * 说明：
+   * 1. 不指定 targetUrl 的消息，只允许前台页面领取。
+   * 2. 指定 targetUrl 的消息，由后端按 URL 匹配，允许后台页面领取。
+   */
+  function isCurrentPageActive() {
+    return !document.hidden &&
+      document.visibilityState === 'visible' &&
+      document.hasFocus();
   }
 
   /**
@@ -481,6 +496,23 @@
   }
 
   /**
+   * 构建本页面轮询队列时使用的 URL。
+   * 说明：
+   * 1. pageUrl：后端用它匹配 targetUrl。
+   * 2. pageActive：targetUrl 为空时，后端只允许当前前台页面领取。
+   * 3. pageId：后端用它给消息加短期领取锁，避免多窗口重复发送。
+   */
+  function buildNextMessageUrl() {
+    const params = new URLSearchParams({
+      pageUrl: location.href,
+      pageActive: String(isCurrentPageActive()),
+      pageId
+    });
+
+    return `${config.localServerBaseUrl}/next-chat-message?${params.toString()}`;
+  }
+
+  /**
    * 从本地 Python 服务拉取一条待发送消息。
    */
   function pollPythonMessageQueue() {
@@ -491,7 +523,7 @@
 
     pollingLocalMessage = true;
 
-    const requestUrl = config.localServerBaseUrl + '/next-chat-message';
+    const requestUrl = buildNextMessageUrl();
 
     chrome.runtime.sendMessage(
       {
@@ -651,7 +683,10 @@
     // 每 1 秒从 Python 本地服务拉取待发送消息。
     setInterval(pollPythonMessageQueue, 1000);
 
-    console.log('[GPT GitHub Helper Full] 已启动');
+    console.log('[GPT GitHub Helper Full] 已启动', {
+      pageId,
+      url: location.href
+    });
   }
 
   start();
