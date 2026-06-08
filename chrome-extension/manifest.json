@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "GPT GitHub Helper Full",
+  "version": "1.2.0",
+  "description": "检测 ChatGPT 回答状态，保存最后回复内容，并辅助确认 GitHub 工具请求",
+  "permissions": [],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "http://127.0.0.1:18888/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "config.js",
+        "page_reader.js",
+        "local_api.js",
+        "github_prompt.js",
+        "whitelist.js",
+        "panel.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
