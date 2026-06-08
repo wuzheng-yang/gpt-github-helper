@@ -72,32 +72,49 @@
   /**
    * 判断请求是否像 ChatGPT 的回答流请求。
    *
-   * 不监听所有请求的原因：
-   * 页面里还有图片、配置、埋点、账号状态等大量请求，全监听会产生噪音。
+   * 规则：
+   * 1. 必须是 POST。
+   * 2. 排除 feedback / settings / history 等非回答生成接口。
+   * 3. URL 需要包含 conversation / responses 等回答生成接口关键词。
    */
-  function shouldWatchUrl(url) {
+  function shouldWatchUrl(url, method = 'GET') {
     const value = String(url || '').toLowerCase();
 
     if (!value) {
       return false;
     }
 
-    const looksLikeChatBackend =
-      value.includes('/backend-api/') ||
+    // 这些不是回答生成接口，排除掉，避免 implicit_message_feedback 之类接口干扰判断。
+    const ignoredKeywords = [
+      'implicit_message_feedback',
+      'feedback',
+      'moderation',
+      'accounts',
+      'settings',
+      'conversation_limit',
+      'models',
+      'conversation_starters',
+      'history',
+      'share'
+    ];
+
+    if (ignoredKeywords.some(keyword => value.includes(keyword))) {
+      return false;
+    }
+
+    // 回答生成一般是 POST。GET 多数是配置、历史、状态读取请求。
+    if (String(method || '').toUpperCase() !== 'POST') {
+      return false;
+    }
+
+    // 更像回答生成的接口。
+    return (
+      value.includes('/backend-api/conversation') ||
+      value.includes('/backend-api/f/conversation') ||
+      value.includes('/backend-api/responses') ||
       value.includes('/conversation') ||
-      value.includes('/responses') ||
-      value.includes('/completion') ||
-      value.includes('/stream');
-
-    const looksLikeChatAction =
-      value.includes('conversation') ||
-      value.includes('response') ||
-      value.includes('completion') ||
-      value.includes('message') ||
-      value.includes('stream') ||
-      value.includes('turn');
-
-    return looksLikeChatBackend && looksLikeChatAction;
+      value.includes('/responses')
+    );
   }
 
   /**
@@ -128,7 +145,7 @@
     window.fetch = async function patchedFetch(input, init) {
       const url = getRequestUrl(input);
       const method = String(init?.method || input?.method || 'GET').toUpperCase();
-      const watch = shouldWatchUrl(url);
+      const watch = shouldWatchUrl(url, method);
       const requestId = watch ? nextRequestId('fetch') : '';
 
       if (watch) {
@@ -260,7 +277,7 @@
     XMLHttpRequest.prototype.send = function patchedSend() {
       const url = this.__gptGithubHelperUrl || '';
       const method = this.__gptGithubHelperMethod || 'GET';
-      const watch = shouldWatchUrl(url);
+      const watch = shouldWatchUrl(url, method);
       const requestId = watch ? nextRequestId('xhr') : '';
 
       if (watch) {
