@@ -36,6 +36,9 @@
   // 防止轮询消息时并发请求
   let pollingLocalMessage = false;
 
+  // 防止同一条本地消息正在发送时重复处理
+  let sendingLocalMessage = false;
+
   // 记录 ChatGPT 原始会话标题。
   // 注意：插件会改 document.title 显示“回答中/已结束”，所以必须单独保存原始标题。
   let conversationTitle = document.title || 'ChatGPT';
@@ -154,24 +157,108 @@
   /**
    * 查找 ChatGPT 输入框。
    * 说明：
-   * 1. 兼容旧版 textarea。
-   * 2. 兼容新版 contenteditable 输入框。
+   * 1. 优先找官方常见 prompt-textarea。
+   * 2. 兼容旧版 textarea。
+   * 3. 兼容新版 ProseMirror / contenteditable 输入框。
    */
   function findChatInput() {
-    const textarea = document.querySelector('textarea');
+    const selectors = [
+      '#prompt-textarea',
+      'textarea[data-id="root"]',
+      'textarea',
+      '[data-testid="composer-text-input"] [contenteditable="true"]',
+      '.ProseMirror[contenteditable="true"]',
+      '[contenteditable="true"][role="textbox"]',
+      '[contenteditable="true"]'
+    ];
 
-    if (textarea) {
-      return textarea;
+    for (const selector of selectors) {
+      const element = document.querySelector(selector);
+
+      if (element) {
+        return element;
+      }
     }
 
-    return document.querySelector('[contenteditable="true"]');
+    return null;
+  }
+
+  /**
+   * 触发输入事件。
+   * 说明：
+   * React / ProseMirror 需要 input 事件来刷新内部状态，否则发送按钮会一直 disabled。
+   */
+  function dispatchComposerInputEvents(input, text) {
+    input.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: text
+    }));
+
+    input.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertText',
+      data: text
+    }));
+
+    input.dispatchEvent(new Event('change', {
+      bubbles: true
+    }));
+  }
+
+  /**
+   * 给 textarea 设置文本。
+   * 说明：
+   * 使用原生 value setter，避免 React 不识别直接 input.value = xxx。
+   */
+  function setTextareaValue(textarea, text) {
+    const prototype = Object.getPrototypeOf(textarea);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+
+    if (descriptor && descriptor.set) {
+      descriptor.set.call(textarea, text);
+    } else {
+      textarea.value = text;
+    }
+
+    dispatchComposerInputEvents(textarea, text);
+    return true;
+  }
+
+  /**
+   * 给 contenteditable 设置文本。
+   * 说明：
+   * ChatGPT 新版输入框一般是 ProseMirror。
+   * 优先使用 execCommand('insertText')，它更容易被编辑器识别。
+   */
+  function setEditableValue(editable, text) {
+    editable.focus();
+
+    try {
+      const selection = window.getSelection();
+      const range = document.createRange();
+
+      range.selectNodeContents(editable);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // 先全选删除，再插入文本，避免和旧内容拼接。
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+      document.execCommand('insertText', false, text);
+    } catch (error) {
+      // execCommand 失败时兜底使用 textContent。
+      editable.textContent = text;
+    }
+
+    dispatchComposerInputEvents(editable, text);
+    return true;
   }
 
   /**
    * 给输入框设置文本。
-   * 说明：
-   * 1. textarea 使用 value + input/change 事件。
-   * 2. contenteditable 使用 textContent + input 事件。
    */
   function setInputText(input, text) {
     if (!input) {
@@ -181,34 +268,48 @@
     input.focus();
 
     if (input.tagName === 'TEXTAREA') {
-      input.value = text;
-
-      input.dispatchEvent(new Event('input', {
-        bubbles: true
-      }));
-
-      input.dispatchEvent(new Event('change', {
-        bubbles: true
-      }));
-
-      return true;
+      return setTextareaValue(input, text);
     }
 
-    input.textContent = text;
+    return setEditableValue(input, text);
+  }
 
-    input.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      inputType: 'insertText',
-      data: text
-    }));
+  /**
+   * 判断按钮是否可点击。
+   */
+  function isButtonUsable(button) {
+    if (!button) {
+      return false;
+    }
 
-    return true;
+    return !button.disabled &&
+      button.getAttribute('aria-disabled') !== 'true' &&
+      button.getAttribute('data-disabled') !== 'true';
   }
 
   /**
    * 查找 ChatGPT 发送按钮。
+   * 说明：
+   * 优先找明确的 send-button / composer-submit-button。
    */
   function findSendButton() {
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[data-testid="composer-submit-button"]',
+      'button[aria-label="Send prompt"]',
+      'button[aria-label="Send message"]',
+      'button[aria-label="发送提示"]',
+      'button[aria-label="发送消息"]'
+    ];
+
+    for (const selector of selectors) {
+      const button = document.querySelector(selector);
+
+      if (button) {
+        return button;
+      }
+    }
+
     const buttons = Array.from(document.querySelectorAll('button'));
 
     return buttons.find(button => {
@@ -227,17 +328,101 @@
   }
 
   /**
+   * 点击发送按钮，最多重试几次。
+   * 说明：
+   * 设置输入框后 React 状态刷新可能有延迟，发送按钮会短暂 disabled。
+   */
+  function clickSendButtonWithRetry(messageId, retryCount = 0) {
+    const sendButton = findSendButton();
+
+    if (isButtonUsable(sendButton)) {
+      sendButton.click();
+      console.log('[GPT GitHub Helper] 已自动发送本地消息');
+      ackLocalMessage(messageId);
+      return true;
+    }
+
+    if (retryCount < 10) {
+      setTimeout(() => {
+        clickSendButtonWithRetry(messageId, retryCount + 1);
+      }, 300);
+      return false;
+    }
+
+    console.warn('[GPT GitHub Helper] ChatGPT 发送按钮不可用，已停止重试');
+    sendingLocalMessage = false;
+    return false;
+  }
+
+  /**
+   * 确认本地队列消息已经发送成功。
+   */
+  function ackLocalMessage(messageId) {
+    if (!messageId) {
+      sendingLocalMessage = false;
+      return;
+    }
+
+    const requestUrl = config.localServerBaseUrl + '/ack-chat-message';
+
+    chrome.runtime.sendMessage(
+      {
+        type: 'CALL_LOCAL_SERVER',
+        url: requestUrl,
+        method: 'POST',
+        payload: {
+          id: messageId
+        }
+      },
+      response => {
+        sendingLocalMessage = false;
+
+        if (chrome.runtime.lastError) {
+          console.warn('[GPT GitHub Helper] 确认队列消息失败：', chrome.runtime.lastError.message);
+          return;
+        }
+
+        if (!response || !response.success) {
+          console.warn('[GPT GitHub Helper] 本地队列 ack 失败：', response);
+        }
+      }
+    );
+  }
+
+  /**
+   * 使用 Enter 作为兜底发送方式。
+   * 说明：
+   * 有些页面结构下按钮选择器变化，Enter 仍然能触发发送。
+   */
+  function fallbackPressEnter(input) {
+    const eventOptions = {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13
+    };
+
+    input.dispatchEvent(new KeyboardEvent('keydown', eventOptions));
+    input.dispatchEvent(new KeyboardEvent('keyup', eventOptions));
+  }
+
+  /**
    * 向 ChatGPT 输入框输入文本并点击发送。
    */
-  function sendTextToChatGPT(text) {
-    const value = String(text || '').trim();
+  function sendTextToChatGPT(message) {
+    const messageId = message?.id || '';
+    const value = String(message?.text || '').trim();
 
     if (!value) {
+      sendingLocalMessage = false;
       return false;
     }
 
     if (currentThinkingState) {
       console.warn('[GPT GitHub Helper] GPT 正在回答，暂不自动发送本地消息');
+      sendingLocalMessage = false;
       return false;
     }
 
@@ -245,6 +430,7 @@
 
     if (!input) {
       console.warn('[GPT GitHub Helper] 没找到 ChatGPT 输入框');
+      sendingLocalMessage = false;
       return false;
     }
 
@@ -252,25 +438,19 @@
 
     if (!inputOk) {
       console.warn('[GPT GitHub Helper] 设置输入框内容失败');
+      sendingLocalMessage = false;
       return false;
     }
 
+    // 先等编辑器刷新，再点击按钮。
     setTimeout(() => {
-      const sendButton = findSendButton();
+      const clicked = clickSendButtonWithRetry(messageId);
 
-      if (!sendButton) {
-        console.warn('[GPT GitHub Helper] 没找到 ChatGPT 发送按钮');
-        return;
+      // 发送按钮找不到或不可用时，尝试 Enter 兜底。
+      if (!clicked) {
+        fallbackPressEnter(input);
       }
-
-      if (sendButton.disabled || sendButton.getAttribute('aria-disabled') === 'true') {
-        console.warn('[GPT GitHub Helper] ChatGPT 发送按钮不可用');
-        return;
-      }
-
-      sendButton.click();
-      console.log('[GPT GitHub Helper] 已自动发送本地消息');
-    }, 300);
+    }, 500);
 
     return true;
   }
@@ -280,7 +460,7 @@
    */
   function pollPythonMessageQueue() {
     // GPT 正在回答时不取队列，避免把消息取出来后发送失败导致丢失。
-    if (currentThinkingState || pollingLocalMessage) {
+    if (currentThinkingState || pollingLocalMessage || sendingLocalMessage) {
       return;
     }
 
@@ -315,8 +495,8 @@
           return;
         }
 
-        const text = body.message.text || '';
-        sendTextToChatGPT(text);
+        sendingLocalMessage = true;
+        sendTextToChatGPT(body.message);
       }
     );
   }
