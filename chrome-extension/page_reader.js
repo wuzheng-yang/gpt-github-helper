@@ -5,89 +5,32 @@
   window.GptGithubHelper = window.GptGithubHelper || {};
 
   /**
-   * 记录最近一次 assistant 文本变化时间。
-   * 用于辅助判断是否还在流式输出。
+   * 最近一次 GPT 回复文本。
+   * 用来判断最后一条 assistant 消息是否还在变化。
    */
   let lastAssistantText = '';
+
+  /**
+   * 最近一次 GPT 回复文本变化时间。
+   */
   let lastAssistantChangeTime = 0;
 
   /**
+   * 最近一次判断结果，方便在控制台调试。
+   */
+  let lastThinkingDebug = {
+    thinking: false,
+    reason: 'init',
+    assistantLength: 0,
+    lastChangeAgoMs: 0
+  };
+
+  /**
    * 获取整个页面文本。
-   * 注意：这个函数只用于读取页面内容、GitHub 请求识别等场景，
-   * 不直接用于判断 GPT 是否正在回答，避免页面历史文本导致误判。
+   * 只用于 GitHub 请求识别，不用于判断回答中。
    */
   function getPageText() {
     return document.body?.innerText || '';
-  }
-
-  /**
-   * 判断元素是否真实可见。
-   * 过滤 ChatGPT 页面中可能残留的隐藏按钮、模板按钮、不可点击按钮。
-   */
-  function isVisibleElement(element) {
-    if (!element) {
-      return false;
-    }
-
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-
-    return style.display !== 'none' &&
-      style.visibility !== 'hidden' &&
-      style.opacity !== '0' &&
-      rect.width > 0 &&
-      rect.height > 0;
-  }
-
-  /**
-   * 判断按钮是否可用。
-   * disabled 或 aria-disabled=true 的按钮不作为“正在回答”的依据。
-   */
-  function isEnabledButton(button) {
-    return !button.disabled && button.getAttribute('aria-disabled') !== 'true';
-  }
-
-  /**
-   * 判断按钮文本、aria-label 或 title 是否包含指定关键词。
-   * ChatGPT 页面按钮可能只有 aria-label，没有可见 innerText。
-   */
-  function buttonIncludes(button, keywords) {
-    const text = button.innerText?.trim() || '';
-    const ariaLabel = button.getAttribute('aria-label') || '';
-    const title = button.getAttribute('title') || '';
-
-    return keywords.some(keyword => {
-      return text.includes(keyword) ||
-        ariaLabel.includes(keyword) ||
-        title.includes(keyword);
-    });
-  }
-
-  /**
-   * 判断页面是否存在真实可见的“停止生成/停止思考”按钮。
-   *
-   * 重点：
-   * 1. 必须是可见按钮
-   * 2. 必须是可点击按钮
-   * 3. 必须匹配停止生成相关文案
-   */
-  function hasActiveStopButton() {
-    const buttons = Array.from(document.querySelectorAll('button'));
-
-    return buttons.some(button => {
-      if (!isVisibleElement(button) || !isEnabledButton(button)) {
-        return false;
-      }
-
-      return buttonIncludes(button, [
-        '停止思考',
-        '停止生成',
-        '停止回答',
-        'Stop generating',
-        'Stop streaming',
-        'Stop responding'
-      ]);
-    });
   }
 
   /**
@@ -121,40 +64,92 @@
   }
 
   /**
-   * 判断 assistant 最后一条消息是否仍在变化。
+   * 判断 GPT 是否正在回答。
    *
-   * 用途：
-   * 有些情况下停止按钮消失得很快，文本还在最后刷新，
-   * 这里给 1.5 秒缓冲，避免过早推送不完整回复。
+   * 这版彻底不再使用 Stop / Thinking / Generating 这些页面文案。
+   * 原因：ChatGPT 页面里经常残留隐藏按钮或隐藏文本，会一直误判回答中。
+   *
+   * 现在只看最后一条 GPT 回复文本是否还在变化：
+   * 1. 文本发生变化 => 回答中
+   * 2. 最近 2 秒内变化过 => 回答中，用于等待最后一段 DOM 更新完成
+   * 3. 超过 2 秒没变化 => 已结束
    */
-  function isAssistantTextChanging() {
+  function isThinking() {
     const currentAssistantText = getLastAssistantMessageText();
     const now = Date.now();
 
-    if (currentAssistantText && currentAssistantText !== lastAssistantText) {
+    // 没有 GPT 回复时，直接认为不是回答中
+    if (!currentAssistantText) {
+      lastThinkingDebug = {
+        thinking: false,
+        reason: 'no_assistant_message',
+        assistantLength: 0,
+        lastChangeAgoMs: 0
+      };
+      return false;
+    }
+
+    // 第一次读取已有历史回复时，只初始化，不认为正在回答
+    if (!lastAssistantText) {
       lastAssistantText = currentAssistantText;
       lastAssistantChangeTime = now;
+      lastThinkingDebug = {
+        thinking: false,
+        reason: 'init_assistant_text',
+        assistantLength: currentAssistantText.length,
+        lastChangeAgoMs: 0
+      };
+      return false;
+    }
+
+    // 文本变化，说明 GPT 正在输出或页面仍在更新
+    if (currentAssistantText !== lastAssistantText) {
+      lastAssistantText = currentAssistantText;
+      lastAssistantChangeTime = now;
+      lastThinkingDebug = {
+        thinking: true,
+        reason: 'assistant_text_changed',
+        assistantLength: currentAssistantText.length,
+        lastChangeAgoMs: 0
+      };
       return true;
     }
 
-    return lastAssistantChangeTime > 0 && now - lastAssistantChangeTime < 1500;
+    const lastChangeAgoMs = now - lastAssistantChangeTime;
+
+    // 最近 2 秒内变化过，继续认为回答中，避免过早保存半截回复
+    if (lastChangeAgoMs < 2000) {
+      lastThinkingDebug = {
+        thinking: true,
+        reason: 'wait_text_stable',
+        assistantLength: currentAssistantText.length,
+        lastChangeAgoMs
+      };
+      return true;
+    }
+
+    lastThinkingDebug = {
+      thinking: false,
+      reason: 'text_stable_finished',
+      assistantLength: currentAssistantText.length,
+      lastChangeAgoMs
+    };
+    return false;
   }
 
   /**
-   * 判断 GPT 是否正在回答。
-   *
-   * 逻辑：
-   * 1. 真实可见且可点击的停止按钮存在 => 回答中
-   * 2. 最后一条 assistant 文本最近还在变化 => 回答中
-   * 3. 否则 => 已结束
+   * 获取最近一次回答状态判断原因。
+   * 在 ChatGPT 页面控制台执行：
+   * window.GptGithubHelper.pageReader.getThinkingDebug()
    */
-  function isThinking() {
-    return hasActiveStopButton() || isAssistantTextChanging();
+  function getThinkingDebug() {
+    return lastThinkingDebug;
   }
 
   window.GptGithubHelper.pageReader = {
     getPageText,
     isThinking,
+    getThinkingDebug,
     getLastAssistantMessageText,
     getLastUserMessageText
   };
