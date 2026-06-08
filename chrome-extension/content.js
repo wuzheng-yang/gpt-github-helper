@@ -29,6 +29,51 @@
   // 防止同一个 GitHub 确认请求重复自动确认
   let githubAutoConfirmedText = '';
 
+  // 记录 ChatGPT 原始会话标题。
+  // 注意：插件会改 document.title 显示“回答中/已结束”，所以必须单独保存原始标题。
+  let conversationTitle = document.title || 'ChatGPT';
+
+  /**
+   * 判断是否是插件自己设置的标题。
+   */
+  function isHelperTitle(title) {
+    return title === config.titles.thinking || title === config.titles.finished;
+  }
+
+  /**
+   * 清理标题，避免把浏览器标题后缀保存进文件名。
+   */
+  function cleanConversationTitle(title) {
+    return String(title || '')
+      .replace(/\s+-\s+ChatGPT$/i, '')
+      .trim();
+  }
+
+  /**
+   * 刷新真实会话标题。
+   * 说明：
+   * 只在当前 document.title 不是插件标题时更新，避免把“回答中/已结束”当成会话名。
+   */
+  function refreshConversationTitle() {
+    const title = cleanConversationTitle(document.title);
+
+    if (!title || isHelperTitle(document.title)) {
+      return;
+    }
+
+    if (title !== 'ChatGPT') {
+      conversationTitle = title;
+    }
+  }
+
+  /**
+   * 获取当前会话标题。
+   */
+  function getConversationTitle() {
+    refreshConversationTitle();
+    return cleanConversationTitle(conversationTitle) || '未命名会话';
+  }
+
   /**
    * 点击 ChatGPT 页面上的 GitHub Allow / 允许 按钮
    */
@@ -105,7 +150,9 @@
    */
   function notifyFinished() {
     setTimeout(() => {
-      localApi.callLocalNotifyApi('finished');
+      localApi.callLocalNotifyApi('finished', {
+        conversationTitle: getConversationTitle()
+      });
     }, 800);
   }
 
@@ -123,6 +170,7 @@
     githubNotifiedText = githubText;
 
     localApi.callLocalNotifyApi('github', {
+      conversationTitle: getConversationTitle(),
       githubFilePath: checkResult.filePath,
       securityOk: checkResult.ok,
       securityReasons: checkResult.reasons
@@ -140,6 +188,8 @@
    * - 如果上一次是 true，这次变 false，触发回答结束推送
    */
   function handleThinkingState(thinking) {
+    refreshConversationTitle();
+
     if (thinking) {
       document.title = config.titles.thinking;
       finishedNotified = false;
