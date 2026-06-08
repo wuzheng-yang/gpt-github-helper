@@ -2,20 +2,20 @@
 // -----------------------------------------------------------------------------
 // 页面真实上下文里的网络监听脚本。
 //
-// 这个文件会被 content.js 通过 <script src="chrome-extension://..."> 自动注入。
-// 用户不需要手工在控制台执行任何脚本。
+// 这个文件通过 manifest.json 的 content_scripts 配置以 world: "MAIN" 运行。
+// 用户不需要手工在控制台执行任何脚本，也不需要手工注入。
 //
-// 为什么要注入页面上下文：
-// content script 和网页自身 JS 是隔离环境，content script 不能直接劫持页面里的
-// window.fetch / XMLHttpRequest。把这个文件作为 script 标签插入页面后，它就运行在
-// ChatGPT 页面真实 JS 上下文里，可以包装页面原生 fetch / XHR。
+// 为什么必须运行在 MAIN world：
+// content script 默认运行在隔离环境，不能直接包装 ChatGPT 页面自己的
+// window.fetch / XMLHttpRequest。MAIN world 脚本运行在页面真实 JS 上下文里，
+// 可以包装页面原生 fetch / XHR。
 //
 // 作用：
 // 1. 监听疑似 ChatGPT 回答流的接口请求。
 // 2. 请求开始时发送 start 事件。
 // 3. fetch 响应 body 读取完时发送 end 事件。
 // 4. XHR loadend / error / abort / timeout 时发送 end / error 事件。
-// 5. 通过 window.postMessage 把事件发给 content.js。
+// 5. 通过 window.postMessage 把事件发给 network_bridge.js。
 //
 // 注意：
 // - 这里只判断请求开始/结束，不保存接口返回内容。
@@ -24,7 +24,7 @@
 // -----------------------------------------------------------------------------
 
 (function () {
-  // 防止插件重复注入导致 fetch / XHR 被多次包装。
+  // 防止插件重复加载导致 fetch / XHR 被多次包装。
   if (window.__GPT_GITHUB_HELPER_NETWORK_WATCHER_INSTALLED__) {
     return;
   }
@@ -101,7 +101,7 @@
   }
 
   /**
-   * 把网络事件发给 content.js。
+   * 把网络事件发给 content script 环境里的 network_bridge.js。
    */
   function postNetworkEvent(event) {
     window.postMessage({
