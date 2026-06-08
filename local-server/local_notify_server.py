@@ -73,6 +73,11 @@ class SendChatPayload(BaseModel):
     # 要发送到 ChatGPT 输入框的文本
     text: str
 
+    # 可选：指定 ChatGPT 会话 URL。
+    # 不传：只允许当前前台激活的 ChatGPT 页面取走。
+    # 传了：只允许 URL 匹配的 ChatGPT 页面取走，即使这个标签页在后台也可以尝试发送。
+    targetUrl: Optional[str] = ""
+
 
 class AckChatPayload(BaseModel):
     # 插件成功点击发送后回传的消息 ID
@@ -109,10 +114,45 @@ LOG_DIR.mkdir(exist_ok=True)
 # Python -> Chrome 插件消息队列
 # =========================
 # 说明：
-# 1. 插件 GET /next-chat-message 时只查看第一条消息，不立即删除。
-# 2. 插件真正点击发送后，再 POST /ack-chat-message 确认删除。
+# 1. 插件 GET /next-chat-message 时只查看可被当前页面处理的消息，不立即删除。
+# 2. 插件真正点击发送，并确认消息出现在页面后，再 POST /ack-chat-message 确认删除。
 # 3. 这样如果 ChatGPT 发送按钮不可用，消息不会丢。
+# 4. targetUrl 为空：只允许当前前台激活页面处理。
+# 5. targetUrl 不为空：只允许 URL 匹配的页面处理，后台标签页也可以尝试发送。
 pending_chat_messages: List[Dict[str, str]] = []
+
+
+# =========================
+# URL 处理
+# =========================
+def normalize_url(url: Optional[str]) -> str:
+    """
+    归一化 ChatGPT 会话 URL。
+    说明：
+    1. 去掉首尾空格。
+    2. 去掉末尾斜杠，避免 https://chatgpt.com/c/xxx 和 https://chatgpt.com/c/xxx/ 不匹配。
+    3. 不删除 query/hash，避免用户希望精确匹配特殊 URL 时误匹配。
+    """
+
+    value = (url or "").strip()
+    return value.rstrip("/")
+
+
+def is_message_match_page(message: Dict[str, str], page_url: str, page_active: bool) -> bool:
+    """
+    判断某条队列消息是否应该被当前 ChatGPT 页面取走。
+    规则：
+    1. message.targetUrl 有值：只要当前页面 URL 匹配，就允许取走，不强制前台。
+    2. message.targetUrl 为空：只有当前页面是前台激活页，才允许取走。
+    """
+
+    target_url = normalize_url(message.get("targetUrl"))
+    current_url = normalize_url(page_url)
+
+    if target_url:
+        return bool(current_url) and current_url == target_url
+
+    return page_active
 
 
 # =========================
@@ -415,9 +455,17 @@ def send_chat_message(payload: SendChatPayload):
     """
     把消息加入待发送队列。
     用法：Python 或其他程序 POST 到这个接口，插件会轮询并自动填入 ChatGPT 输入框发送。
+
+    请求示例：
+    1. 不指定 targetUrl：发给当前前台激活的 ChatGPT 页面。
+       {"text": "继续"}
+
+    2. 指定 targetUrl：只发给 URL 匹配的 ChatGPT 页面，后台标签页也可以尝试发送。
+       {"text": "继续", "targetUrl": "https://chatgpt.com/c/xxxx"}
     """
 
     text = (payload.text or "").strip()
+    target_url = normalize_url(payload.targetUrl)
 
     if not text:
         return {
@@ -429,6 +477,7 @@ def send_chat_message(payload: SendChatPayload):
     message = {
         "id": uuid4().hex,
         "text": text,
+        "targetUrl": target_url,
         "createdAt": datetime.datetime.now().isoformat()
     }
 
@@ -443,11 +492,15 @@ def send_chat_message(payload: SendChatPayload):
 
 
 @app.get("/next-chat-message")
-def next_chat_message():
+def next_chat_message(pageUrl: str = "", pageActive: bool = False):
     """
     插件轮询这个接口。
-    如果有待发送消息，只返回第一条，不删除。
+    如果有当前页面可处理的待发送消息，只返回该消息，不删除。
     插件发送成功后会调用 /ack-chat-message 删除。
+
+    匹配规则：
+    1. targetUrl 为空：只有 pageActive=true 的当前前台页面能取走。
+    2. targetUrl 不为空：只要 pageUrl 与 targetUrl 匹配即可取走，不强制前台。
     """
 
     if not pending_chat_messages:
@@ -458,10 +511,19 @@ def next_chat_message():
             "queueSize": 0
         }
 
+    for message in pending_chat_messages:
+        if is_message_match_page(message, pageUrl, pageActive):
+            return {
+                "success": True,
+                "hasMessage": True,
+                "message": message,
+                "queueSize": len(pending_chat_messages)
+            }
+
     return {
         "success": True,
-        "hasMessage": True,
-        "message": pending_chat_messages[0],
+        "hasMessage": False,
+        "message": None,
         "queueSize": len(pending_chat_messages)
     }
 
@@ -469,7 +531,7 @@ def next_chat_message():
 @app.post("/ack-chat-message")
 def ack_chat_message(payload: AckChatPayload):
     """
-    插件确认消息已经点击发送。
+    插件确认消息已经成功发送。
     收到确认后，本地服务才从队列删除消息。
     """
 
@@ -545,10 +607,16 @@ def health():
     浏览器访问：http://127.0.0.1:18888/health
     """
 
+    targeted_count = len([
+        item for item in pending_chat_messages
+        if item.get("targetUrl")
+    ])
+
     return {
         "success": True,
         "message": "GPT 本地通知服务运行中",
-        "pendingChatMessages": len(pending_chat_messages)
+        "pendingChatMessages": len(pending_chat_messages),
+        "targetedChatMessages": targeted_count
     }
 
 
