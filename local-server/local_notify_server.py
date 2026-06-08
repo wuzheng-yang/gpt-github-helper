@@ -3,14 +3,16 @@
 # 1. 接收 Chrome 插件发送的 GPT 回复内容
 # 2. 回答结束后按 ChatGPT 会话标题保存 Markdown
 # 3. 一个会话固定保存到一个 Markdown 文件中
-# 4. 检测 GitHub 请求时保存日志
-# 5. Windows 下弹窗提醒
-# 6. 可扩展为调用你自己的 exe / Java 程序
+# 4. 支持 Python 把消息放入队列，由插件自动输入并发送到 ChatGPT
+# 5. 检测 GitHub 请求时保存日志
+# 6. Windows 下弹窗提醒
+# 7. 可扩展为调用你自己的 exe / Java 程序
 
 import datetime
 import re
 import subprocess
 from pathlib import Path
+from queue import Queue, Empty
 from typing import Optional, List, Dict, Any
 
 import uvicorn
@@ -67,6 +69,11 @@ class NotifyPayload(BaseModel):
     whitelistReasons: Optional[List[str]] = None
 
 
+class SendChatPayload(BaseModel):
+    # 要发送到 ChatGPT 输入框的文本
+    text: str
+
+
 # =========================
 # FastAPI 应用
 # =========================
@@ -91,6 +98,12 @@ LOG_DIR = BASE_DIR / "logs"
 
 REPLY_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
+
+
+# =========================
+# Python -> Chrome 插件消息队列
+# =========================
+pending_chat_messages: Queue[Dict[str, str]] = Queue()
 
 
 # =========================
@@ -386,6 +399,62 @@ def gpt_finished(payload: NotifyPayload):
 
 
 # =========================
+# Python -> 插件：发送 ChatGPT 消息
+# =========================
+@app.post("/send-chat-message")
+def send_chat_message(payload: SendChatPayload):
+    """
+    把消息加入待发送队列。
+    用法：Python 或其他程序 POST 到这个接口，插件会轮询并自动填入 ChatGPT 输入框发送。
+    """
+
+    text = (payload.text or "").strip()
+
+    if not text:
+        return {
+            "success": False,
+            "message": "消息内容不能为空",
+            "queueSize": pending_chat_messages.qsize()
+        }
+
+    pending_chat_messages.put({
+        "text": text,
+        "createdAt": datetime.datetime.now().isoformat()
+    })
+
+    return {
+        "success": True,
+        "message": "消息已加入待发送队列",
+        "queueSize": pending_chat_messages.qsize()
+    }
+
+
+@app.get("/next-chat-message")
+def next_chat_message():
+    """
+    插件轮询这个接口。
+    如果有待发送消息，就取出一条；如果没有，就返回 hasMessage=false。
+    """
+
+    try:
+        message = pending_chat_messages.get_nowait()
+    except Empty:
+        return {
+            "success": True,
+            "hasMessage": False,
+            "message": None,
+            "queueSize": 0
+        }
+
+    return {
+        "success": True,
+        "hasMessage": True,
+        "message": message,
+        "queueSize": pending_chat_messages.qsize()
+    }
+
+
+# =========================
 # 保存 GitHub 请求日志
 # =========================
 @app.post("/github-confirm-request")
@@ -435,7 +504,8 @@ def health():
 
     return {
         "success": True,
-        "message": "GPT 本地通知服务运行中"
+        "message": "GPT 本地通知服务运行中",
+        "pendingChatMessages": pending_chat_messages.qsize()
     }
 
 
