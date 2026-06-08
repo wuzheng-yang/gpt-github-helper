@@ -1,6 +1,6 @@
 # GPT GitHub Helper Full
 
-这是一个 Chrome 插件 + 本地 Python 服务组合工具，用于辅助个人在 ChatGPT 页面中保存回答内容、记录 GitHub 工具确认请求，并提供快捷确认入口。
+这是一个 Chrome 插件 + 本地 Python 服务组合工具，用于辅助个人在 ChatGPT 页面中保存会话内容、记录 GitHub 工具确认请求，并提供快捷确认入口。
 
 ---
 
@@ -20,21 +20,47 @@
 ✅ GPT 已结束 - ChatGPT
 ```
 
-### 2. 回答结束后保存内容
+注意：插件会单独记录 ChatGPT 原始会话标题，不会把上面的状态标题当成保存文件名。
+
+### 2. 一个会话保存为一个 Markdown 文件
 
 回答结束后，插件会把下面内容发送给本地 Python 服务：
 
-- 页面标题
+- ChatGPT 原始会话标题
 - 页面地址
 - 最后一条用户提问
 - 最后一条 GPT 回复
 - 页面时间
 
-本地服务会保存 Markdown 文件到：
+本地服务会把同一个 ChatGPT 会话保存到同一个 Markdown 文件中。
+
+保存目录：
 
 ```text
 local-server/gpt_replies/
 ```
+
+文件名规则：
+
+```text
+ChatGPT会话标题.md
+```
+
+例如 ChatGPT 左侧会话标题是：
+
+```text
+GitHub 插件调试
+```
+
+则保存为：
+
+```text
+local-server/gpt_replies/GitHub 插件调试.md
+```
+
+如果新版插件发送了完整页面快照，则本地服务会覆盖写入同一个文件，保证文件内容是当前会话最新状态。
+
+如果仍是旧版发送逻辑，则本地服务会把每次回答追加到同一个会话文件中，避免覆盖历史内容。
 
 日志目录：
 
@@ -154,10 +180,6 @@ chrome://extensions/
 
 注意：选择的是 `chrome-extension` 文件夹，不是整个仓库目录。
 
-![打开 Chrome 扩展开发者模式](images2/开发者-插件.jpg)
-
-![访问插件](images2/访问插件.jpg)
-
 ---
 
 ## 第三步：使用流程
@@ -167,7 +189,7 @@ chrome://extensions/
 3. 刷新 ChatGPT 页面
 4. 正常向 ChatGPT 提问
 5. GPT 回答结束后，本地服务会收到 `/gpt-finished` 请求
-6. 回复内容会保存到 `local-server/gpt_replies/`
+6. 会话会保存到 `local-server/gpt_replies/会话标题.md`
 
 如果浏览器控制台出现：
 
@@ -186,10 +208,6 @@ CORS policy
 
 请确认已经更新到包含 `background.js` 的版本，并且已经刷新 Chrome 插件。
 
-![插件运行入口示例](images2/1780904034192.jpg)
-
-![GPT 指示灯](images2/gpt指示灯.jpg)
-
 ---
 
 ## GitHub 确认规则
@@ -200,7 +218,7 @@ CORS policy
 chrome-extension/config.js
 ```
 
-默认配置如下：
+默认配置示例：
 
 ```js
 window.GptGithubHelper.config = {
@@ -217,16 +235,9 @@ window.GptGithubHelper.config = {
     'Create GitHub file'
   ],
 
-  blockedPaths: [
-    '.env',
-    'node_modules/',
-    'dist/',
-    'build/'
-  ],
+  blockedPaths: [],
 
-  dangerWords: [
-    '.env'
-  ],
+  dangerWords: [],
 
   shortcut: {
     confirmAllowKey: 'a'
@@ -264,6 +275,7 @@ local-server/logs/github_confirm.log
 
 日志内容包括：
 
+- ChatGPT 会话标题
 - ChatGPT 页面地址
 - GitHub 文件路径
 - 安全校验是否通过
@@ -328,7 +340,17 @@ chrome://extensions/
 4. 控制台是否还有请求错误
 5. `local-server/logs/finished.log` 是否有记录
 
-### 3. 标题一直显示回答中
+### 3. 为什么文件名是“未命名会话.md”
+
+通常是 ChatGPT 页面还没有生成左侧会话标题，或者插件启动时只读到了默认标题。
+
+解决方法：
+
+1. 等 ChatGPT 左侧标题生成后再继续提问一次
+2. 刷新 ChatGPT 页面
+3. 检查保存文件是否变成真实标题
+
+### 4. 标题一直显示回答中
 
 当前判断逻辑基于最后一条 GPT 回复文本是否变化。
 
@@ -338,11 +360,18 @@ chrome://extensions/
 ✅ GPT 已结束 - ChatGPT
 ```
 
-### 4. 为什么不做无条件自动点击 GitHub Allow
+### 5. 本地服务没启动会怎样
 
-当前版本保留人工确认入口，不做无条件自动点击。
+不会影响 ChatGPT 页面正常使用，但内容不会保存成功。
 
-原因是 GitHub 工具确认属于写仓库操作，插件只负责辅助识别、展示校验结果、提供快捷键和日志记录。
+控制台通常会打印：
+
+```text
+Failed to fetch
+ERR_CONNECTION_REFUSED
+```
+
+启动本地服务后，重新刷新 ChatGPT 页面即可。
 
 ---
 
