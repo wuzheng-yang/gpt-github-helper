@@ -1,8 +1,146 @@
 # GPT GitHub Helper Full
 
-这是一个 Chrome 插件 + 本地 Python 服务组合工具，用于辅助个人在 ChatGPT 页面中保存会话内容、记录 GitHub 工具确认请求、从 Python 向 ChatGPT 输入框发送消息，并提供 GitHub 工具确认辅助。
+这是一个 **Chrome 插件 + 本地 Python 服务** 组合工具，用于个人本地开发时辅助 ChatGPT 页面完成：
+
+- 保存 ChatGPT 会话内容到 Markdown
+- 记录 GitHub 工具确认请求
+- 自动确认 GitHub 工具请求
+- 从 Python 向 ChatGPT 输入框发送消息
+- 支持指定 ChatGPT 会话 URL 精准发送
+- 使用接口流状态 + DOM 状态双保险判断 GPT 是否回答结束
 
 > 当前项目定位：个人本地开发辅助工具。
+
+---
+
+## 效果截图
+
+### GitHub 工具自动确认面板
+
+![自动确认](images2/自动确认.jpg)
+
+---
+
+## 整体架构图
+
+```mermaid
+flowchart TB
+    subgraph Browser[Chrome 浏览器]
+        subgraph ChatGPT[ChatGPT 页面]
+            UI[ChatGPT 页面 DOM]
+            Fetch[页面 fetch / XHR]
+        end
+
+        subgraph Extension[Chrome 插件]
+            MW[network_watcher.js<br/>MAIN world<br/>监听 fetch / XHR]
+            NB[network_bridge.js<br/>桥接网络状态]
+            PR[page_reader.js<br/>读取消息 / 判断状态]
+            CS[content.js<br/>主流程调度]
+            GP[github_prompt.js<br/>识别 GitHub 确认卡片]
+            SC[safety_check.js<br/>配置校验]
+            PN[panel.js<br/>右侧确认面板]
+            LA[local_api.js<br/>组装通知 payload]
+            BG[background.js<br/>请求本地服务中转]
+            CFG[config.js<br/>仓库 / 分支 / action 配置]
+        end
+    end
+
+    subgraph Local[本地 Python 服务]
+        API[FastAPI<br/>local_notify_server.py]
+        Queue[内存消息队列<br/>pending_chat_messages]
+        Replies[gpt_replies/*.md]
+        Logs[logs/*.log]
+    end
+
+    subgraph External[本地外部程序]
+        PY[Python / curl / 其他程序]
+    end
+
+    Fetch --> MW
+    MW -->|postMessage: start/end/error| NB
+    NB -->|包装 isThinking| PR
+    UI --> PR
+    PR --> CS
+    CFG --> SC
+    GP --> SC
+    SC --> PN
+    CS --> GP
+    CS --> PN
+    CS --> LA
+    LA --> BG
+    BG --> API
+    API --> Replies
+    API --> Logs
+    PY -->|POST /send-chat-message| API
+    API --> Queue
+    CS -->|GET /next-chat-message| BG
+    BG --> API
+    API -->|可发送消息| CS
+    CS -->|填入输入框并点击发送| UI
+    CS -->|POST /ack-chat-message| BG
+```
+
+---
+
+## 数据流程图
+
+```mermaid
+sequenceDiagram
+    participant User as 用户 / Python 程序
+    participant Server as 本地 FastAPI 服务
+    participant BG as background.js
+    participant CS as content.js
+    participant Bridge as network_bridge.js
+    participant Watcher as network_watcher.js
+    participant Page as ChatGPT 页面
+    participant File as Markdown / 日志文件
+
+    rect rgb(245, 248, 255)
+    Note over Watcher,Bridge: 回答状态检测
+    Page->>Watcher: fetch / XHR 请求开始
+    Watcher->>Bridge: postMessage(start)
+    Bridge->>CS: isThinking() = true
+    CS->>Page: 标题改为“GPT 回答中”
+    Page->>Watcher: 接口流结束
+    Watcher->>Bridge: postMessage(end)
+    Bridge->>CS: isThinking() = false
+    CS->>BG: 通知 /gpt-finished
+    BG->>Server: POST /gpt-finished
+    Server->>File: 保存 gpt_replies/会话标题.md
+    end
+
+    rect rgb(248, 255, 245)
+    Note over User,Page: Python 自动发送消息
+    User->>Server: POST /send-chat-message<br/>text + targetUrl可选
+    Server->>Server: 加入 pending_chat_messages
+    CS->>BG: GET /next-chat-message?pageUrl&pageActive&pageId
+    BG->>Server: 查询可发送消息
+    Server->>Server: 按 targetUrl / pageActive 匹配并加领取锁
+    Server->>BG: 返回 message
+    BG->>CS: 返回 message
+    CS->>Page: 填入输入框并点击发送
+    CS->>CS: 等待最后一条 user 消息出现
+    CS->>BG: POST /ack-chat-message
+    BG->>Server: 删除队列消息
+    end
+
+    rect rgb(255, 248, 245)
+    Note over CS,File: GitHub 工具确认
+    CS->>Page: 查找 Allow / 允许按钮
+    CS->>Page: 读取按钮附近 GitHub 请求文本
+    CS->>CS: safety_check 配置校验
+    CS->>Page: 显示右侧确认面板
+    CS->>BG: POST /github-confirm-request
+    BG->>Server: 写确认日志
+    Server->>File: logs/github_confirm.log
+    alt 配置校验通过
+        CS->>Page: 自动点击 Allow
+    else 配置校验不通过
+        Page->>CS: 用户点击“仍然确认”
+        CS->>Page: 强制点击 Allow
+    end
+    end
+```
 
 ---
 
