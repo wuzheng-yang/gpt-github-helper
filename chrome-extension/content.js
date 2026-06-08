@@ -328,23 +328,72 @@
   }
 
   /**
+   * 判断本地消息是否已经出现在最后一条用户消息里。
+   * 说明：
+   * 1. 只比较前面一段文本，避免长消息里有换行、Markdown 格式导致完全匹配失败。
+   * 2. 点击发送按钮后，只有页面真的出现用户消息，才认为发送成功。
+   */
+  function isLocalMessageVisibleInChat(text) {
+    const lastUserText = String(pageReader.getLastUserMessageText() || '').trim();
+    const expectedText = String(text || '').trim();
+
+    if (!lastUserText || !expectedText) {
+      return false;
+    }
+
+    const compareLength = Math.min(80, expectedText.length);
+    const expectedPrefix = expectedText.slice(0, compareLength);
+
+    return lastUserText.includes(expectedPrefix);
+  }
+
+  /**
+   * 等待本地消息真正进入 ChatGPT 会话后再 ack。
+   * 说明：
+   * 1. 原来点击按钮后马上 ack，页面卡顿或点击无效时会丢消息。
+   * 2. 现在最多等待约 9 秒，确认最后一条用户消息出现后再从本地队列删除。
+   * 3. 如果一直没出现，不 ack，消息保留在本地队列，稍后可以重试。
+   */
+  function waitUserMessageAppearedThenAck(messageId, text, retryCount = 0) {
+    if (isLocalMessageVisibleInChat(text)) {
+      console.log('[GPT GitHub Helper] 已确认本地消息进入会话，开始 ack');
+      ackLocalMessage(messageId);
+      return;
+    }
+
+    if (retryCount < 30) {
+      setTimeout(() => {
+        waitUserMessageAppearedThenAck(messageId, text, retryCount + 1);
+      }, 300);
+      return;
+    }
+
+    console.warn('[GPT GitHub Helper] 未确认本地消息进入会话，暂不 ack，消息保留在本地队列');
+    sendingLocalMessage = false;
+  }
+
+  /**
    * 点击发送按钮，最多重试几次。
    * 说明：
    * 设置输入框后 React 状态刷新可能有延迟，发送按钮会短暂 disabled。
    */
-  function clickSendButtonWithRetry(messageId, retryCount = 0) {
+  function clickSendButtonWithRetry(messageId, text, retryCount = 0) {
     const sendButton = findSendButton();
 
     if (isButtonUsable(sendButton)) {
       sendButton.click();
-      console.log('[GPT GitHub Helper] 已自动发送本地消息');
-      ackLocalMessage(messageId);
+      console.log('[GPT GitHub Helper] 已点击 ChatGPT 发送按钮');
+
+      // 点击按钮不等于真正发送成功，等待消息出现在页面后再 ack。
+      setTimeout(() => {
+        waitUserMessageAppearedThenAck(messageId, text);
+      }, 300);
       return;
     }
 
     if (retryCount < 15) {
       setTimeout(() => {
-        clickSendButtonWithRetry(messageId, retryCount + 1);
+        clickSendButtonWithRetry(messageId, text, retryCount + 1);
       }, 300);
       return;
     }
@@ -423,9 +472,9 @@
     }
 
     // 先等编辑器刷新，再点击按钮。
-    // 只有真正点击发送按钮成功后，才会 ack 删除队列消息。
+    // 只有消息真正出现在页面后，才会 ack 删除队列消息。
     setTimeout(() => {
-      clickSendButtonWithRetry(messageId);
+      clickSendButtonWithRetry(messageId, value);
     }, 500);
 
     return true;
