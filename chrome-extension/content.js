@@ -4,7 +4,8 @@
 // 1. 检测 GPT 是否回答中 / 已结束
 // 2. 回答结束后通知本地 Python 服务
 // 3. 检测 GitHub 工具确认请求
-// 4. 安全校验通过或不通过，都在右侧中间弹窗，让用户手动确认
+// 4. 安全校验通过时右侧中间弹窗并自动确认
+// 5. 安全校验不通过时右侧中间弹窗，允许用户手动“仍然确认”
 
 (function () {
   const {
@@ -25,12 +26,11 @@
   // 防止同一个 GitHub 确认请求重复弹窗 / 重复写日志
   let githubNotifiedText = '';
 
+  // 防止同一个 GitHub 确认请求重复自动确认
+  let githubAutoConfirmedText = '';
+
   /**
    * 点击 ChatGPT 页面上的 GitHub Allow / 允许 按钮
-   *
-   * 注意：
-   * - 这个函数只会在用户点击插件面板按钮或快捷键时执行
-   * - 不做自动点击
    */
   function clickAllowButton() {
     const allowButton = githubPrompt.findAllowButton();
@@ -43,6 +43,22 @@
     allowButton.click();
     panel.hidePanel();
     return true;
+  }
+
+  function scheduleAutoConfirm(githubText) {
+    if (githubAutoConfirmedText === githubText) {
+      return;
+    }
+
+    githubAutoConfirmedText = githubText;
+
+    setTimeout(() => {
+      if (githubPrompt.getGithubPromptText() !== githubText) {
+        return;
+      }
+
+      confirmAllow(false);
+    }, 300);
   }
 
   /**
@@ -146,7 +162,8 @@
    * 2. 有 GitHub 请求，执行安全校验
    * 3. 弹出右侧中间面板
    * 4. 面板中显示是否通过、文件路径、失败原因
-   * 5. 用户点击按钮后才确认
+   * 5. 通过时自动确认
+   * 6. 不通过时用户可点击“仍然确认”
    */
   function handleGithubPrompt() {
     const githubText = githubPrompt.getGithubPromptText();
@@ -160,6 +177,10 @@
 
     notifyGithubRequest(githubText, checkResult);
     panel.renderPanel(checkResult);
+
+    if (checkResult.ok) {
+      scheduleAutoConfirm(githubText);
+    }
   }
 
   /**

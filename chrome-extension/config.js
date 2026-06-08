@@ -24,10 +24,10 @@
 
     // 不允许修改的文件夹或文件名
     blockedPaths: [
-      '.env',
-      'node_modules/',
-      'dist/',
-      'build/'
+      // '.env',
+      // 'node_modules/',
+      // 'dist/',
+      // 'build/'
     ],
 
     // 出现这些词时，不允许快捷确认
@@ -36,7 +36,7 @@
       // 'delete',
       // 'Remove',
       // 'remove',
-      '.env',
+      // '.env',
       // 'secret',
       // 'Secret',
       // 'token',

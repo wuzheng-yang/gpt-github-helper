@@ -1,7 +1,7 @@
 // panel.js
 // 负责右侧中间 GitHub 确认面板。
 // 功能：
-// 1. 安全校验通过：显示绿色状态，按钮为“确认允许”
+// 1. 安全校验通过：显示绿色状态，并由主流程自动确认
 // 2. 安全校验不通过：显示红色状态，列出原因，按钮为“仍然确认”
 // 3. 面板固定在右侧中间，避免遮挡页面底部
 
@@ -87,7 +87,7 @@
     const statusText = ok ? '安全校验通过' : '安全校验未通过';
     const statusColor = ok ? '#4ade80' : '#f87171';
 
-    const buttonText = ok ? '确认允许' : '仍然确认';
+    const buttonText = ok ? '自动确认中' : '仍然确认';
     const buttonBackground = ok ? '#ffffff' : '#f97316';
     const buttonColor = ok ? '#111111' : '#111111';
 
@@ -150,7 +150,7 @@
         color: #aaa;
         margin-bottom: 12px;
       ">
-        快捷键：Alt + A，仅用于安全校验通过的请求。
+        ${ok ? '安全校验通过后会自动确认。' : '安全校验未通过时，需要手动点击“仍然确认”。'}
       </div>
 
       <div style="
