@@ -22,9 +22,9 @@
 - 回答结束后读取最后一条 GPT 回复
 - 把用户最后提问和 GPT 最后回复发送到本地服务
 - 检测 GitHub 工具确认请求
-- 根据仓库、分支、操作、路径做白名单校验
-- 白名单通过后，可点击右下角按钮确认
-- 白名单通过后，也可按快捷键：
+- 根据仓库、操作、禁止分支、禁止路径做安全校验
+- 安全校验通过后，可点击右下角按钮确认
+- 安全校验通过后，也可按快捷键：
 
 ```text
 Alt + A
@@ -50,7 +50,7 @@ gpt-github-helper-full/
 │  ├─ page_reader.js
 │  ├─ local_api.js
 │  ├─ github_prompt.js
-│  ├─ whitelist.js
+│  ├─ safety_check.js
 │  ├─ panel.js
 │  └─ content.js
 ├─ local-server/
@@ -154,7 +154,7 @@ local-server/logs/
 
 ## GitHub 快捷确认
 
-插件默认只允许这些内容快捷确认。
+插件默认只允许指定仓库和操作类型快捷确认，同时会拦截禁止分支、禁止路径和危险词。
 
 ### 仓库
 
@@ -162,12 +162,10 @@ local-server/logs/
 wuzheng-yang/ai_gp_v2
 ```
 
-### 分支
+### 不允许操作的分支
 
 ```text
 main
-dev
-dev/auto-gpt
 ```
 
 ### 操作
@@ -177,13 +175,13 @@ Update GitHub file
 Create GitHub file
 ```
 
-### 路径
+### 不允许修改的文件夹或文件名
 
 ```text
-ai_vue/src/
-ai_api/app/
-docs/
-README.md
+.env
+node_modules/
+dist/
+build/
 ```
 
 ### 危险词
@@ -198,7 +196,7 @@ README.md
 
 ---
 
-## 修改白名单
+## 修改安全规则
 
 打开：
 
@@ -211,10 +209,12 @@ chrome-extension/config.js
 ```js
 window.GptGithubHelper.config = {
   localServerBaseUrl: 'http://127.0.0.1:18888',
-  allowedRepo: 'wuzheng-yang/ai_gp_v2',
-  allowedBranches: ['main', 'dev', 'dev/auto-gpt'],
+  allowedRepos: [
+    'wuzheng-yang/gpt-github-helper'
+  ],
+  blockedBranches: ['main'],
   allowedActions: ['Update GitHub file', 'Create GitHub file'],
-  allowedPathPrefixes: ['ai_vue/src/', 'ai_api/app/', 'docs/', 'README.md'],
+  blockedPaths: ['.env', 'node_modules/', 'dist/', 'build/'],
   dangerWords: ['.env']
 };
 ```
@@ -251,10 +251,38 @@ subprocess.Popen([
 
 ---
 
+## 截图
+
+### 插件安装与访问
+
+![打开 Chrome 扩展开发者模式](images2/开发者-插件.jpg)
+
+![访问插件](images2/访问插件.jpg)
+
+### 运行状态
+
+![GPT 指示灯](images2/gpt指示灯.jpg)
+
+![输入继续并发送](images1/输入继续-发送.png)
+
+### 示例页面
+
+![订阅页面示例](images1/pro-订阅.png)
+
+![文件测试示例](images1/mimo该文件测试.png)
+
+![本地页面示例](images2/1780904034192.jpg)
+
+### GitHub 更新示例
+
+![GitHub 更新记录示例](images2/github更新.jpg)
+
+---
+
 ## 注意
 
 1. 插件从 ChatGPT 页面 DOM 读取内容，不是官方 API。
 2. 如果 ChatGPT 页面结构变化，可能需要调整 `page_reader.js` 或 `github_prompt.js` 里的选择器。
 3. 插件不会无条件自动点击 GitHub 允许按钮。
-4. GitHub 快捷确认只会在白名单通过后可用。
+4. GitHub 快捷确认只会在安全校验通过后可用。
 5. 本地服务必须先启动，插件才能保存回复。
