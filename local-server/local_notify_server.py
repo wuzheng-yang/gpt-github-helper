@@ -42,10 +42,16 @@ class NotifyPayload(BaseModel):
     # GitHub 文件路径
     githubFilePath: Optional[str] = ""
 
-    # GitHub 白名单是否通过
+    # GitHub 安全校验是否通过
+    securityOk: Optional[bool] = None
+
+    # GitHub 安全校验失败原因
+    securityReasons: Optional[List[str]] = None
+
+    # 兼容旧版本字段
     whitelistOk: Optional[bool] = None
 
-    # GitHub 白名单失败原因
+    # 兼容旧版本字段
     whitelistReasons: Optional[List[str]] = None
 
 
@@ -110,7 +116,7 @@ def call_your_program(event_type: str, markdown_file: Optional[Path] = None):
 
     示例：
     subprocess.Popen([
-        r"D:\your_app\notify.exe",
+        "D:\\your_app\\notify.exe",
         event_type,
         str(markdown_file or "")
     ], shell=False)
@@ -190,12 +196,16 @@ def github_confirm_request(payload: NotifyPayload):
     now = datetime.datetime.now()
     log_file = LOG_DIR / "github_confirm.log"
 
-    reasons = payload.whitelistReasons or []
+    security_ok = payload.securityOk
+    if security_ok is None:
+        security_ok = payload.whitelistOk
+
+    reasons = payload.securityReasons or payload.whitelistReasons or []
 
     content = f"""[{now.strftime('%Y-%m-%d %H:%M:%S')}]
 URL: {payload.url}
 GitHub File: {payload.githubFilePath}
-Whitelist OK: {payload.whitelistOk}
+Security OK: {security_ok}
 Reasons: {"; ".join(reasons)}
 User: {payload.userText}
 

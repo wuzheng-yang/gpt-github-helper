@@ -1,5 +1,5 @@
 // config.js
-// 插件配置：按项目调整白名单、快捷键和本地服务地址。
+// 插件配置：按项目调整仓库、黑名单、快捷键和本地服务地址。
 
 (function () {
   window.GptGithubHelper = window.GptGithubHelper || {};
@@ -9,10 +9,12 @@
     localServerBaseUrl: 'http://127.0.0.1:18888',
 
     // 允许操作的 GitHub 仓库
-    allowedRepo: 'wuzheng-yang/ai_gp_v2',
+    allowedRepos: [
+      'wuzheng-yang/gpt-github-helper'
+    ],
 
-    // 允许操作的分支
-    allowedBranches: ['main', 'dev', 'dev/auto-gpt'],
+    // 不允许操作的分支
+    blockedBranches: ['master'],
 
     // 允许的 GitHub 操作
     allowedActions: [
@@ -20,12 +22,12 @@
       'Create GitHub file'
     ],
 
-    // 允许修改的路径前缀
-    allowedPathPrefixes: [
-      'ai_vue/src/',
-      'ai_api/app/',
-      'docs/',
-      'README.md'
+    // 不允许修改的文件夹或文件名
+    blockedPaths: [
+      '.env',
+      'node_modules/',
+      'dist/',
+      'build/'
     ],
 
     // 出现这些词时，不允许快捷确认

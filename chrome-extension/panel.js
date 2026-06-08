@@ -43,12 +43,12 @@
   function renderPanel(checkResult) {
     const p = createPanel();
 
-    const statusText = checkResult.ok ? '白名单通过' : '白名单未通过';
+    const statusText = checkResult.ok ? '安全校验通过' : '安全校验未通过';
     const statusColor = checkResult.ok ? '#4ade80' : '#f87171';
 
     const reasonsHtml = checkResult.reasons.length
       ? checkResult.reasons.map(item => `<li>${escapeHtml(item)}</li>`).join('')
-      : '<li>仓库、分支、操作类型、路径均已通过</li>';
+      : '<li>仓库、操作类型已通过，分支和路径未命中禁止项</li>';
 
     p.innerHTML = `
       <div style="font-weight: 700; margin-bottom: 8px;">

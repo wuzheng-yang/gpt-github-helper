@@ -11,7 +11,7 @@
     pageReader,
     localApi,
     githubPrompt,
-    whitelist,
+    safetyCheck,
     panel
   } = window.GptGithubHelper;
 
@@ -21,10 +21,10 @@
 
   function confirmAllow() {
     const text = githubPrompt.getGithubPromptText();
-    const checkResult = whitelist.checkWhitelist(text);
+    const checkResult = safetyCheck.checkSafety(text);
 
     if (!checkResult.ok) {
-      alert('白名单未通过，不能快捷确认。');
+      alert('安全校验未通过，不能快捷确认。');
       panel.renderPanel(checkResult);
       return;
     }
@@ -78,15 +78,15 @@
       return;
     }
 
-    const checkResult = whitelist.checkWhitelist(githubText);
+    const checkResult = safetyCheck.checkSafety(githubText);
     panel.renderPanel(checkResult);
 
     if (githubNotifiedText !== githubText) {
       githubNotifiedText = githubText;
       localApi.callLocalNotifyApi('github', {
         githubFilePath: checkResult.filePath,
-        whitelistOk: checkResult.ok,
-        whitelistReasons: checkResult.reasons
+        securityOk: checkResult.ok,
+        securityReasons: checkResult.reasons
       });
     }
   }

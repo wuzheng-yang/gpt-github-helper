@@ -20,7 +20,7 @@
         "page_reader.js",
         "local_api.js",
         "github_prompt.js",
-        "whitelist.js",
+        "safety_check.js",
         "panel.js",
         "content.js"
       ],
