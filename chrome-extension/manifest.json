@@ -39,7 +39,8 @@
         "github_prompt.js",
         "safety_check.js",
         "panel.js",
-        "content.js"
+        "content.js",
+        "runtime_settings.js"
       ],
       "run_at": "document_idle"
     }
