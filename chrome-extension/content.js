@@ -1,14 +1,25 @@
 // content.js
-// 插件主流程：串联页面状态检测、本地通知、GitHub 工具确认和本地消息自动发送。
-// 功能：
-// 1. 检测 GPT 是否回答中 / 已结束
-// 2. 回答结束后通知本地 Python 服务
-// 3. 检测 GitHub 工具确认请求
-// 4. 安全校验通过时右侧中间弹窗并自动确认
-// 5. 安全校验不通过时右侧中间弹窗，允许用户手动“仍然确认”
-// 6. 轮询本地 Python 消息队列，把消息填入 ChatGPT 输入框并点击发送
+// -----------------------------------------------------------------------------
+// Chrome 插件 content script 主流程文件。
+//
+// 这个文件运行在 ChatGPT 页面里，负责把其他模块串起来。
+//
+// 核心职责：
+// 1. 检测 GPT 是否正在回答 / 是否回答结束。
+// 2. 回答结束后，把会话内容发送给本地 Python 服务保存 Markdown。
+// 3. 检测 GitHub 工具确认请求。
+// 4. 根据 config.js + safety_check.js 的结果显示右侧确认面板。
+// 5. 配置校验通过时自动点击 ChatGPT 页面原生 Allow / 允许按钮。
+// 6. 轮询本地 Python 消息队列，把 Python 发来的文本自动输入到 ChatGPT。
+//
+// 依赖模块加载顺序由 manifest.json 保证：
+// config.js -> page_reader.js -> local_api.js -> github_prompt.js
+// -> safety_check.js -> panel.js -> content.js
+// -----------------------------------------------------------------------------
 
 (function () {
+  // 从 window.GptGithubHelper 取出其他模块。
+  // 这些对象分别由前面的 JS 文件注册。
   const {
     config,
     pageReader,
@@ -18,43 +29,72 @@
     panel
   } = window.GptGithubHelper;
 
-  // 当前页面唯一 ID，用于后端短时间锁定消息，避免多个 ChatGPT 窗口重复发送同一条队列消息。
+  // ---------------------------------------------------------------------------
+  // 当前页面唯一 ID。
+  //
+  // 用途：
+  // 1. 每个 ChatGPT 标签页都会生成一个不同 pageId。
+  // 2. 插件轮询 /next-chat-message 时会把 pageId 发给后端。
+  // 3. 后端用 pageId 给消息加短期领取锁，避免多个标签页重复发送同一条消息。
+  //
+  // 注意：
+  // 刷新页面后 pageId 会重新生成，这是正常的。
+  // ---------------------------------------------------------------------------
   const pageId = `page-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  // 上一次 GPT 是否回答中的状态
+  // 上一次 GPT 是否回答中的状态。
+  // null 表示插件刚启动，还没有历史状态。
   let lastThinkingState = null;
 
-  // 当前 GPT 是否回答中，给自动发送消息时判断使用
+  // 当前 GPT 是否回答中。
+  // Python 自动发送消息前会检查这个变量，避免 GPT 回答中仍继续发下一条消息。
   let currentThinkingState = false;
 
-  // 防止同一次回答结束重复推送
+  // 防止同一次回答结束重复推送 /gpt-finished。
+  // 每次 thinking=true 时重置为 false；thinking 从 true -> false 时推送一次。
   let finishedNotified = false;
 
-  // 防止同一个 GitHub 确认请求重复弹窗 / 重复写日志
+  // 防止同一个 GitHub 确认请求重复写日志。
+  // 保存上一次请求文本，如果文本没变就不重复通知本地服务。
   let githubNotifiedText = '';
 
-  // 防止同一个 GitHub 确认请求重复自动确认
+  // 防止同一个 GitHub 确认请求重复自动点击 Allow。
   let githubAutoConfirmedText = '';
 
-  // 防止轮询消息时并发请求
+  // 防止 /next-chat-message 轮询并发。
+  // 如果上一次请求还没回来，下一次轮询直接跳过。
   let pollingLocalMessage = false;
 
-  // 防止同一条本地消息正在发送时重复处理
+  // 防止同一条本地消息正在发送时重复处理。
+  // 例如发送按钮还没变可用、等待 ack 时，不允许再取新消息。
   let sendingLocalMessage = false;
 
   // 记录 ChatGPT 原始会话标题。
-  // 注意：插件会改 document.title 显示“回答中/已结束”，所以必须单独保存原始标题。
+  //
+  // 为什么不能直接使用 document.title：
+  // content.js 会把 document.title 改成“回答中/已结束”，方便用户看状态。
+  // 如果保存文件名时直接用 document.title，就会保存成状态标题。
   let conversationTitle = document.title || 'ChatGPT';
 
   /**
-   * 判断是否是插件自己设置的标题。
+   * 判断标题是否是插件自己设置的状态标题。
+   *
+   * @param {string} title 当前浏览器标题
+   * @returns {boolean} 是否是插件状态标题
    */
   function isHelperTitle(title) {
     return title === config.titles.thinking || title === config.titles.finished;
   }
 
   /**
-   * 清理标题，避免把浏览器标题后缀保存进文件名。
+   * 清理 ChatGPT 会话标题。
+   *
+   * @param {string} title 原始标题
+   * @returns {string} 清理后的标题
+   *
+   * 主要处理：
+   * - 去掉浏览器标题后缀：xxx - ChatGPT
+   * - 去掉首尾空格
    */
   function cleanConversationTitle(title) {
     return String(title || '')
@@ -64,8 +104,11 @@
 
   /**
    * 刷新真实会话标题。
-   * 说明：
-   * 只在当前 document.title 不是插件标题时更新，避免把“回答中/已结束”当成会话名。
+   *
+   * 规则：
+   * 1. 当前 document.title 是插件状态标题时，不更新 conversationTitle。
+   * 2. 当前标题是 ChatGPT 默认标题时，不覆盖已有真实标题。
+   * 3. 只有读到类似“项目问题与改进建议”这种真实会话标题时才保存。
    */
   function refreshConversationTitle() {
     const title = cleanConversationTitle(document.title);
@@ -81,6 +124,8 @@
 
   /**
    * 获取当前会话标题。
+   *
+   * @returns {string} 会话标题，空时返回“未命名会话”
    */
   function getConversationTitle() {
     refreshConversationTitle();
@@ -89,9 +134,17 @@
 
   /**
    * 判断当前页面是否是前台可操作页面。
-   * 说明：
-   * 1. 不指定 targetUrl 的消息，只允许前台页面领取。
-   * 2. 指定 targetUrl 的消息，由后端按 URL 匹配，允许后台页面领取。
+   *
+   * @returns {boolean} 是否前台激活
+   *
+   * 用途：
+   * - Python 消息没有 targetUrl 时，只允许当前前台 ChatGPT 页面取消息。
+   * - Python 消息指定 targetUrl 时，由后端按 URL 匹配，不强制前台。
+   *
+   * 三个判断：
+   * - document.hidden：标签页是否隐藏
+   * - visibilityState：页面是否 visible
+   * - hasFocus：浏览器窗口/标签页是否有焦点
    */
   function isCurrentPageActive() {
     return !document.hidden &&
@@ -101,6 +154,11 @@
 
   /**
    * 点击 ChatGPT 页面上的 GitHub Allow / 允许 按钮。
+   *
+   * @returns {boolean} 是否成功找到并点击按钮
+   *
+   * 注意：
+   * 这里点击的是 ChatGPT 页面原生工具确认按钮，不是插件右侧面板按钮。
    */
   function clickAllowButton() {
     const allowButton = githubPrompt.findAllowButton();
@@ -117,6 +175,15 @@
 
   /**
    * 延迟自动确认 GitHub 工具请求。
+   *
+   * @param {string} githubText 当前 GitHub 工具确认卡片文本
+   *
+   * 为什么延迟 300ms：
+   * - 给 panel.renderPanel() 一点时间先展示结果。
+   * - 避免 DOM 刚出现时按钮还没稳定。
+   *
+   * 为什么再次比较 githubPrompt.getGithubPromptText()：
+   * - 如果 300ms 内页面确认卡片变了，说明当前请求已变化，不能点旧请求。
    */
   function scheduleAutoConfirm(githubText) {
     if (githubAutoConfirmedText === githubText) {
@@ -138,14 +205,18 @@
    * 确认 GitHub 工具请求。
    *
    * @param {boolean} force
-   * - false：只允许安全校验通过时确认
-   * - true：用户在弹窗里主动点击“仍然确认”时，允许继续确认
+   * - false：只允许配置校验通过时确认。
+   * - true：用户在插件面板点击“仍然确认”时，允许跳过校验继续确认。
+   *
+   * 返回：
+   * - true：成功点击原生 Allow 按钮
+   * - false：未点击
    */
   function confirmAllow(force = false) {
     const text = githubPrompt.getGithubPromptText();
     const checkResult = safetyCheck.checkSafety(text);
 
-    // 未通过安全校验，并且不是用户强制确认，则只弹窗提示
+    // 配置校验未通过，并且不是用户强制确认时，只显示面板，不点击原生 Allow。
     if (!checkResult.ok && !force) {
       panel.renderPanel(checkResult);
       return false;
@@ -157,8 +228,10 @@
   /**
    * 绑定快捷键 Alt + A。
    *
-   * 快捷键只用于“安全校验通过”的确认。
-   * 如果安全校验不通过，需要用户在弹窗中点击“仍然确认”。
+   * 说明：
+   * - 快捷键只按普通模式确认：confirmAllow(false)。
+   * - 如果配置校验不通过，不会因为快捷键直接强制确认。
+   * - 强制确认只能通过面板里的“仍然确认”按钮触发。
    */
   function bindShortcut() {
     window.addEventListener('keydown', event => {
@@ -171,10 +244,16 @@
 
   /**
    * 查找 ChatGPT 输入框。
-   * 说明：
-   * 1. 优先找官方常见 prompt-textarea。
-   * 2. 兼容旧版 textarea。
-   * 3. 兼容新版 ProseMirror / contenteditable 输入框。
+   *
+   * @returns {HTMLElement|null} 输入框元素
+   *
+   * ChatGPT 输入框 DOM 经常变化，所以这里按优先级兼容多种选择器：
+   * 1. 老版本 #prompt-textarea
+   * 2. textarea[data-id="root"]
+   * 3. 普通 textarea
+   * 4. 新版 composer-text-input 里的 contenteditable
+   * 5. ProseMirror 编辑器
+   * 6. role="textbox" 的 contenteditable
    */
   function findChatInput() {
     const selectors = [
@@ -199,9 +278,15 @@
   }
 
   /**
-   * 触发输入事件。
-   * 说明：
-   * React / ProseMirror 需要 input 事件来刷新内部状态，否则发送按钮会一直 disabled。
+   * 触发输入相关事件。
+   *
+   * @param {HTMLElement} input 输入框元素
+   * @param {string} text 输入文本
+   *
+   * 为什么要手动触发事件：
+   * React / ProseMirror 这类前端框架不只看 DOM 值，
+   * 还会维护内部状态。如果只改 textarea.value 或 textContent，
+   * 发送按钮可能仍然 disabled。
    */
   function dispatchComposerInputEvents(input, text) {
     input.dispatchEvent(new InputEvent('beforeinput', {
@@ -224,8 +309,13 @@
 
   /**
    * 给 textarea 设置文本。
-   * 说明：
-   * 使用原生 value setter，避免 React 不识别直接 input.value = xxx。
+   *
+   * @param {HTMLTextAreaElement} textarea textarea 输入框
+   * @param {string} text 要写入的文本
+   * @returns {boolean} 是否成功
+   *
+   * 使用原生 value setter 的原因：
+   * React 会劫持 value 属性，直接 textarea.value = xxx 有时不会被 React 识别。
    */
   function setTextareaValue(textarea, text) {
     const prototype = Object.getPrototypeOf(textarea);
@@ -242,10 +332,14 @@
   }
 
   /**
-   * 给 contenteditable 设置文本。
-   * 说明：
-   * ChatGPT 新版输入框一般是 ProseMirror。
-   * 优先使用 execCommand('insertText')，它更容易被编辑器识别。
+   * 给 contenteditable / ProseMirror 设置文本。
+   *
+   * @param {HTMLElement} editable 可编辑元素
+   * @param {string} text 要写入的文本
+   * @returns {boolean} 是否成功
+   *
+   * 优先使用 document.execCommand('insertText')，
+   * 因为它更像真实输入，更容易被 ProseMirror 识别。
    */
   function setEditableValue(editable, text) {
     editable.focus();
@@ -273,7 +367,11 @@
   }
 
   /**
-   * 给输入框设置文本。
+   * 给 ChatGPT 输入框设置文本。
+   *
+   * @param {HTMLElement} input 输入框元素
+   * @param {string} text 要发送的文本
+   * @returns {boolean} 是否成功
    */
   function setInputText(input, text) {
     if (!input) {
@@ -291,6 +389,14 @@
 
   /**
    * 判断按钮是否可点击。
+   *
+   * @param {HTMLButtonElement|null} button 按钮元素
+   * @returns {boolean} 是否可用
+   *
+   * 同时兼容：
+   * - 原生 disabled
+   * - aria-disabled
+   * - data-disabled
    */
   function isButtonUsable(button) {
     if (!button) {
@@ -304,8 +410,11 @@
 
   /**
    * 查找 ChatGPT 发送按钮。
-   * 说明：
-   * 优先找明确的 send-button / composer-submit-button。
+   *
+   * @returns {HTMLButtonElement|null} 发送按钮
+   *
+   * 优先找稳定的 data-testid / aria-label。
+   * 如果找不到，再从所有 button 里用文本兜底匹配。
    */
   function findSendButton() {
     const selectors = [
@@ -344,9 +453,13 @@
 
   /**
    * 判断本地消息是否已经出现在最后一条用户消息里。
-   * 说明：
-   * 1. 只比较前面一段文本，避免长消息里有换行、Markdown 格式导致完全匹配失败。
-   * 2. 点击发送按钮后，只有页面真的出现用户消息，才认为发送成功。
+   *
+   * @param {string} text Python 队列里的消息文本
+   * @returns {boolean} 是否已经显示在会话中
+   *
+   * 为什么只比较前 80 个字符：
+   * - 长文本可能包含换行、Markdown、空格差异。
+   * - 只要开头匹配，基本可以判断是这条消息已经发送到页面。
    */
   function isLocalMessageVisibleInChat(text) {
     const lastUserText = String(pageReader.getLastUserMessageText() || '').trim();
@@ -364,10 +477,15 @@
 
   /**
    * 等待本地消息真正进入 ChatGPT 会话后再 ack。
-   * 说明：
-   * 1. 原来点击按钮后马上 ack，页面卡顿或点击无效时会丢消息。
-   * 2. 现在最多等待约 9 秒，确认最后一条用户消息出现后再从本地队列删除。
-   * 3. 如果一直没出现，不 ack，消息保留在本地队列，稍后可以重试。
+   *
+   * @param {string} messageId 后端队列消息 ID
+   * @param {string} text 消息文本
+   * @param {number} retryCount 当前重试次数
+   *
+   * ack 设计：
+   * - 点击发送按钮不代表消息一定发送成功。
+   * - 只有页面最后一条 user 消息出现了这段文本，才调用 /ack-chat-message。
+   * - 如果 30 次检查仍失败，不 ack，消息保留在后端队列。
    */
   function waitUserMessageAppearedThenAck(messageId, text, retryCount = 0) {
     if (isLocalMessageVisibleInChat(text)) {
@@ -389,8 +507,13 @@
 
   /**
    * 点击发送按钮，最多重试几次。
-   * 说明：
-   * 设置输入框后 React 状态刷新可能有延迟，发送按钮会短暂 disabled。
+   *
+   * @param {string} messageId 后端队列消息 ID
+   * @param {string} text 消息文本
+   * @param {number} retryCount 当前重试次数
+   *
+   * 为什么需要重试：
+   * 输入框写入文本后，React / ProseMirror 更新发送按钮状态可能有延迟。
    */
   function clickSendButtonWithRetry(messageId, text, retryCount = 0) {
     const sendButton = findSendButton();
@@ -419,6 +542,13 @@
 
   /**
    * 确认本地队列消息已经发送成功。
+   *
+   * @param {string} messageId 后端队列消息 ID
+   *
+   * 调用后端：
+   * POST /ack-chat-message
+   *
+   * 后端收到 ack 后会从 pending_chat_messages 中删除这条消息。
    */
   function ackLocalMessage(messageId) {
     if (!messageId) {
@@ -454,6 +584,11 @@
 
   /**
    * 向 ChatGPT 输入框输入文本并点击发送。
+   *
+   * @param {object} message 后端返回的队列消息
+   * @param {string} message.id 消息 ID
+   * @param {string} message.text 消息文本
+   * @returns {boolean} 是否开始发送流程
    */
   function sendTextToChatGPT(message) {
     const messageId = message?.id || '';
@@ -497,10 +632,11 @@
 
   /**
    * 构建本页面轮询队列时使用的 URL。
-   * 说明：
-   * 1. pageUrl：后端用它匹配 targetUrl。
-   * 2. pageActive：targetUrl 为空时，后端只允许当前前台页面领取。
-   * 3. pageId：后端用它给消息加短期领取锁，避免多窗口重复发送。
+   *
+   * 传给后端的查询参数：
+   * - pageUrl：当前 ChatGPT 页面 URL，用于匹配 targetUrl。
+   * - pageActive：当前页面是否前台激活。
+   * - pageId：当前页面唯一 ID，用于后端消息领取锁。
    */
   function buildNextMessageUrl() {
     const params = new URLSearchParams({
@@ -514,9 +650,13 @@
 
   /**
    * 从本地 Python 服务拉取一条待发送消息。
+   *
+   * 后端匹配规则：
+   * - message.targetUrl 为空：只有 pageActive=true 的页面能领取。
+   * - message.targetUrl 有值：只有 pageUrl 完全匹配的页面能领取，不强制前台。
    */
   function pollPythonMessageQueue() {
-    // GPT 正在回答时不取队列，避免把消息取出来后发送失败导致丢失。
+    // GPT 正在回答、正在请求队列、正在发送消息时，都不取新消息。
     if (currentThinkingState || pollingLocalMessage || sendingLocalMessage) {
       return;
     }
@@ -559,11 +699,11 @@
   }
 
   /**
-   * 回答结束后，延迟 800ms 通知本地服务。
+   * 回答结束后，延迟通知本地服务。
    *
-   * 延迟的作用：
-   * - 等待 ChatGPT 最后一段 DOM 更新完成
-   * - 避免保存到半截回复
+   * 为什么延迟 800ms：
+   * - ChatGPT 最后一段 DOM 更新可能略晚于文本稳定判断。
+   * - 延迟一点可以减少保存半截回复的概率。
    */
   function notifyFinished() {
     setTimeout(() => {
@@ -577,7 +717,9 @@
    * 通知本地服务：检测到了 GitHub 确认请求。
    *
    * @param {string} githubText 当前页面中的 GitHub 请求文本
-   * @param {object} checkResult 安全校验结果
+   * @param {object} checkResult 配置校验结果
+   *
+   * 这个通知只用于写日志，不负责确认按钮。
    */
   function notifyGithubRequest(githubText, checkResult) {
     if (githubNotifiedText === githubText) {
@@ -597,12 +739,11 @@
   /**
    * 处理 GPT 回答状态。
    *
-   * thinking = true：
-   * - 标题显示回答中
+   * @param {boolean} thinking 当前是否回答中
    *
-   * thinking = false：
-   * - 标题显示已结束
-   * - 如果上一次是 true，这次变 false，触发回答结束推送
+   * 状态变化：
+   * - thinking=true：标题显示回答中，并允许本轮结束时再次推送。
+   * - thinking=false 且上一轮是 true：认为本轮回答刚结束，通知本地服务保存。
    */
   function handleThinkingState(thinking) {
     refreshConversationTitle();
@@ -625,13 +766,13 @@
   /**
    * 处理 GitHub 工具确认请求。
    *
-   * 逻辑：
-   * 1. 没有 GitHub 请求，不处理
-   * 2. 有 GitHub 请求，执行安全校验
-   * 3. 弹出右侧中间面板
-   * 4. 面板中显示是否通过、文件路径、失败原因
-   * 5. 通过时自动确认
-   * 6. 不通过时用户可点击“仍然确认”
+   * 流程：
+   * 1. 找 GitHub 请求文本和 Allow 按钮。
+   * 2. 没有请求或没有按钮时直接返回。
+   * 3. 执行配置校验。
+   * 4. 写本地日志。
+   * 5. 渲染右侧确认面板。
+   * 6. 校验通过时安排自动确认。
    */
   function handleGithubPrompt() {
     const githubText = githubPrompt.getGithubPromptText();
@@ -654,9 +795,10 @@
   /**
    * 主循环。
    *
-   * 每 1 秒：
-   * 1. 检测 GPT 回答状态
-   * 2. 检测 GitHub 工具确认请求
+   * 每 1 秒执行：
+   * 1. 读取 pageReader.isThinking() 判断回答状态。
+   * 2. 根据状态更新标题，并在回答结束时保存会话。
+   * 3. 检测是否出现 GitHub 工具确认卡片。
    */
   function loop() {
     const thinking = pageReader.isThinking();
@@ -669,11 +811,18 @@
 
   /**
    * 插件启动入口。
+   *
+   * 启动内容：
+   * 1. 创建右侧确认面板 DOM。
+   * 2. 设置面板“仍然确认”按钮回调。
+   * 3. 绑定 Alt + A 快捷键。
+   * 4. 启动回答状态 / GitHub 请求检测循环。
+   * 5. 启动 Python 消息队列轮询。
    */
   function start() {
     panel.createPanel();
 
-    // 面板按钮点击时，允许用户强制确认
+    // 面板按钮点击时，允许用户强制确认。
     panel.setConfirmHandler(() => confirmAllow(true));
 
     bindShortcut();
