@@ -120,11 +120,17 @@ chrome-extension
 
 注意：选择的是 `chrome-extension` 文件夹，不是整个压缩包。
 
+![打开 Chrome 扩展开发者模式](images2/开发者-插件.jpg)
+
+![访问插件](images2/访问插件.jpg)
+
 ---
 
 ## 第三步：使用
 
 打开 ChatGPT 页面。
+
+![插件运行入口示例](images2/1780904034192.jpg)
 
 当 GPT 正在回答时，标题会变成：
 
@@ -149,6 +155,8 @@ local-server/gpt_replies/
 ```text
 local-server/logs/
 ```
+
+![GPT 指示灯](images2/gpt指示灯.jpg)
 
 ---
 
@@ -193,6 +201,8 @@ build/
 ```
 
 其他危险词可在 `chrome-extension/config.js` 的 `dangerWords` 中按需开启。
+
+![GitHub 更新记录示例](images2/github更新.jpg)
 
 ---
 
@@ -248,34 +258,6 @@ subprocess.Popen([
 ```
 
 这样 GPT 回答结束后，会自动调用你的程序，并把 Markdown 文件路径传进去。
-
----
-
-## 截图
-
-### 插件安装与访问
-
-![打开 Chrome 扩展开发者模式](images2/开发者-插件.jpg)
-
-![访问插件](images2/访问插件.jpg)
-
-### 运行状态
-
-![GPT 指示灯](images2/gpt指示灯.jpg)
-
-![输入继续并发送](images1/输入继续-发送.png)
-
-### 示例页面
-
-![订阅页面示例](images1/pro-订阅.png)
-
-![文件测试示例](images1/mimo该文件测试.png)
-
-![本地页面示例](images2/1780904034192.jpg)
-
-### GitHub 更新示例
-
-![GitHub 更新记录示例](images2/github更新.jpg)
 
 ---
 
