@@ -167,17 +167,34 @@
    * 注意：
    * 这里点击的是 ChatGPT 页面原生工具确认按钮，不是插件右侧面板按钮。
    */
-  function clickAllowButton(preferredButton = null) {
+  function getCurrentAllowButton(preferredButton = null) {
+    return preferredButton && document.body.contains(preferredButton)
+      ? preferredButton
+      : githubPrompt.findAllowButton();
+  }
+
+  function clickAllowButton(preferredButton = null, options = {}) {
+    const showMissingAlert = options.showMissingAlert !== false;
+    const markConfirmed = options.markConfirmed === true;
     const allowButton = preferredButton && document.body.contains(preferredButton)
       ? preferredButton
       : githubPrompt.findAllowButton();
 
     if (!allowButton) {
-      alert('没有找到 GitHub 允许按钮。');
+      if (showMissingAlert) {
+        alert('没有找到 GitHub 允许按钮。');
+      }
+      return false;
+    }
+
+    if (!isButtonUsable(allowButton)) {
       return false;
     }
 
     allowButton.click();
+    if (markConfirmed) {
+      autoConfirmedButtons.add(allowButton);
+    }
     panel.hidePanel();
     return true;
   }
@@ -220,13 +237,28 @@
     lastAutoConfirmSignature = signature;
     lastAutoConfirmAt = now;
 
-    if (allowButton) {
-      autoConfirmedButtons.add(allowButton);
+    retryAutoConfirm(allowButton, 0);
+  }
+
+  function retryAutoConfirm(preferredButton, retryCount) {
+    const allowButton = getCurrentAllowButton(preferredButton);
+
+    if (allowButton && autoConfirmedButtons.has(allowButton)) {
+      return;
+    }
+
+    if (clickAllowButton(allowButton, { showMissingAlert: false, markConfirmed: true })) {
+      console.log('[GPT GitHub Helper] 配置校验通过，已自动确认 GitHub 请求');
+      return;
+    }
+
+    if (retryCount >= 12) {
+      console.warn('[GPT GitHub Helper] GitHub 允许按钮暂不可用，自动确认已停止重试');
+      return;
     }
 
     setTimeout(() => {
-      console.log('[GPT GitHub Helper] 配置校验通过，自动确认 GitHub 请求');
-      clickAllowButton(allowButton);
+      retryAutoConfirm(allowButton || preferredButton, retryCount + 1);
     }, 300);
   }
 
