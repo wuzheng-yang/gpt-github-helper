@@ -464,9 +464,17 @@
       return false;
     }
 
+    const style = window.getComputedStyle(button);
+    const rect = button.getBoundingClientRect();
+
     return !button.disabled &&
       button.getAttribute('aria-disabled') !== 'true' &&
-      button.getAttribute('data-disabled') !== 'true';
+      button.getAttribute('data-disabled') !== 'true' &&
+      style.pointerEvents !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.display !== 'none' &&
+      rect.width > 0 &&
+      rect.height > 0;
   }
 
   /**
